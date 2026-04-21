@@ -37,9 +37,8 @@ from nav_assist.config import (
     PANEL_W, PANEL_H, INSTRUCTION_BAR_H,
 )
 from nav_assist.workers import DepthWorker, SegWorker
-from nav_assist.path_planner import plan_path
+from nav_assist.path_planner import PathPlanner
 from nav_assist.visualization import build_navigation_overlay
-from nav_assist.audio import AudioFeedback
 
 
 def main():
@@ -83,9 +82,9 @@ def main():
     seg_session = ort.InferenceSession(SEG_ONNX, providers=providers)
     print(f'      Providers: {seg_session.get_providers()}')
 
-    # ── Audio feedback ──────────────────────────────────────────────────
-    print('[3/4] Initializing audio feedback...')
-    audio = AudioFeedback(cooldown=3.0, enabled=True)
+    # ── Path planner + voice guidance ──────────────────────────────────
+    print('[3/4] Initializing path planner with voice guidance...')
+    planner = PathPlanner(speaker_enabled=True, speaker_cooldown=2.5)
 
     # ── Open camera ─────────────────────────────────────────────────────
     print('[4/4] Opening camera (index 0)...')
@@ -158,15 +157,11 @@ def main():
             depth_fps = shared['depth_fps']
             seg_fps = shared['seg_fps']
 
-        # ── Path Planner (depth-gated + fuzzy logic) ──────────────────
+        # ── Path Planner (depth-gated + fuzzy logic + voice) ─────────
         t_obs = time.perf_counter()
-        nav_instruction, planner_details = plan_path(seg_mask, depth_np)
+        nav_instruction, planner_details = planner.plan(seg_mask, depth_np)
 
         obs_fps = 1.0 / max(time.perf_counter() - t_obs, 1e-6)
-
-        # ── Audio feedback ──────────────────────────────────────────────
-        speech_text = nav_instruction.replace(' — ', ', ')
-        audio.speak(speech_text)
 
         # ── Build overlay display ───────────────────────────────────────
         display = build_navigation_overlay(
@@ -186,15 +181,15 @@ def main():
             cv2.imwrite(path, display)
             print(f'Screenshot saved: {path}')
         if key in (ord('m'), ord('M')):
-            state = audio.toggle()
-            print(f'Audio {"ON" if state else "OFF"}')
+            state = planner.toggle_speaker()
+            print(f'Voice guidance {"ON" if state else "OFF"}')
 
     # ── Cleanup ─────────────────────────────────────────────────────────
     print('\nShutting down...')
     stop_event.set()
     depth_worker.join(timeout=3)
     seg_worker.join(timeout=3)
-    audio.shutdown()
+    planner.shutdown()
     cap.release()
     cv2.destroyAllWindows()
     print('Done.')
