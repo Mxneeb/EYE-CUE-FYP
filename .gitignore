@@ -1,0 +1,33 @@
+# Archive version folders (source snapshots)
+fyp-*/
+
+# Runtime/cache/editor folders
+.pytest_cache/
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+venv/
+.venv/
+.claude/
+.idea/
+.vscode/
+screenshots/
+
+# Large model/artifact files
+**/*.pth
+**/*.pt
+**/*.onnx
+**/*.engine
+**/*.weights
+trained_models/
+models/*.pt
+models/*.pth
+
+# OS/editor noise
+Thumbs.db
+.DS_Store
+*.swp
+*.swo

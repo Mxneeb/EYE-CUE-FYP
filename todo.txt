@@ -1,0 +1,233 @@
+Obs-tackle: an obstacle detection system to assist navigation of
+visually impaired using smartphones
+U. Vijetha1 ·V. Geetha1
+Received: 24 March 2023 / Revised: 5 December 2023 / Accepted: 6 December 2023 / Published online: 19 January 2024
+© The Author(s), under exclusive licence to Springer-Verlag GmbH Germany, part of Springer Nature 2024
+Abstract
+As the prevalence of vision impairment continues to rise worldwide, there is an increasing need for affordable and accessible
+solutions that improve the daily experiences of individuals with vision impairment. The Visually Impaired (VI) are often prone
+to falls and injuries due to their inability to recognize dangers on the path while navigating. It is therefore crucial that they
+are aware of potential hazards in both known and unknown environments. Obstacle detection plays a key role in navigation
+assistance solutions for VI users. There has been a surge in experimentation on obstacle detection since the introduction of
+autonomous navigation in automobiles, robots, and drones. Previously, auditory, laser, and depth sensors dominated obstacle
+detection; however, advances in computer vision and deep learning have enabled it using simpler tools like smartphone
+cameras. While previous approaches to obstacle detection using estimated depth data have been effective, they suffer from
+limitations such as compromised accuracy when adapted for edge devices and the incapability to identify objects in the scene.
+To address these limitations, we propose an indoor and outdoor obstacle detection and identification technique that combines
+semantic segmentation with depth estimation data. We hypothesize that this combination of techniques will enhance obstacle
+detection and identification compared to using depth data alone. To evaluate the effectiveness of our proposed Obstacle
+detection method, we validated it against ground truth Obstacle data derived from the DIODE and NYU Depth v2 dataset.
+Our experimental results demonstrate that the proposed method achieves near 85% accuracy in detecting nearby obstacles
+with lower false positive and false negative rates. The demonstration of the proposed system deployed as an Android app-
+‘Obs-tackle’ is available at https://youtu.be/PSn-FEc5EQg?si=qPGB13tkYkD1kSOf.
+Keywords Visually impaired (VI) · Obstacle detection · Obstacle avoidance · Navigation guidance
+
+- Introduction -
+Vision loss was estimated to affect 1.1 billion people world-
+wide in 2020, including 18.2% of the Indian population as
+reported in Vision Atlas [2]. Visual impairment is a serious
+condition that causes partial or total vision loss. The loss of
+vision significantly impacts the individual’s quality of life
+and, more importantly, their self-esteem. Day-to-day activi-
+ties such as navigating safely in indoor/outdoor spaces, which
+are easily accomplished by sighted people, can be major hur-
+dles for them.
+
+- Proposed work -
+Based on the inherent system requirements gathered from the
+literature survey, we summarize the key components required
+for the solution as follows:
+• A method to identify objects and their relative distances
+from the user.
+• A technique to confine this list to nearby obstacles only.
+• A path planning technique to guide the user around obsta-
+cles.
+Figure of workflow attached presents a comprehensive overview of our pro-
+posed architecture, which consists of three core modules: the
+Data Transformation module, the Obstacle Detection mod-
+ule, and the Path Planner module. Each of these components
+play a distinct role in providing effective navigation guidance
+to the user.
+
+The Data Transformation module serves as the initial step
+intheprocess. It takes monocular RGB video frames captured
+by the user’s smartphone and processes them to generate
+two crucial representations of the captured frame: seman-
+tic segmentation image and estimated depth image. These
+representations are essential for understanding the environ-
+ment. The semantic segmentation images classify objects in
+the scene, allowing the system to identify pathways, pedes-
+trians, vehicles, and other relevant elements. The estimated
+depth images provide a sense of distance, enabling the system
+to understand the proximity to objects.
+The output from the Data Transformation module is used
+by Obstacle Detection Module (ODM). The ODM uses the
+estimated depth data to isolate segments within a predefined
+depth threshold. These segments represent potential obsta-
+cles in the user’s path. The ODM’s primary function is to
+identify and flag these obstacles, ensuring that the system
+can make informed decisions regarding navigation.
+The identified obstacle segments are then relayed to the
+Path Planner module. The Path Planner uses Fuzzy logic
+to evaluate the risk posed by obstacles and determines the
+appropriate course of action. The Path Planner generates real-
+time alerts and navigation instructions that are tailored to
+the specific obstacle and risk level. These instructions are
+communicated to the user through the smartphone’s audio
+speakers. The following subsections describe in detail the
+roles and responsibilities of each module.
+
+3.1 Data transformation module (DTM)
+The proposed system receives real-time video input from the
+smartphonecamera. At regular intervals, frames are extracted
+from this video stream and then subjected to further pro-
+cessing. The captured frames typically exhibit too much
+redundancy and complex details, making them less suitable
+for further analysis.
+In the context of obstacle detection and avoidance, the
+system must have information about the proximity of objects
+within the captured images and the identity of those objects.
+The raw RGB images, in their original form, merely represent
+pixel values without providing any insight into an object’s
+distance or identity. To meet these objectives, the input image
+needs to be transformed into a format that conveys informa-
+tion about object distances within the scene and provides
+a means of identifying these objects. Recent advancements
+in computer vision have enabled us to estimate depth infor-
+mation from monocular RGB images, thus offering insights
+into the spatial arrangement of objects. Semantic segmenta-
+tion models assign semantic labels to individual pixels in the
+image, effectively providing identifiers for various entities
+present in the captured scene.
+The representations derived from both the Depth Estima-
+tion model and Semantic Segmentation model significantly
+reduce the complexity of the initial RGB data, consolidating
+it into formats that contain minimal yet highly task-specific
+information. DTM transforms the captured input image I into
+its semantic segmentation Is and disparity image Id counter-
+parts. The functionality of DTM can be formulated as
+Is, Id = f dtm(I) (1)
+The subsequent modules in the proposed workflow ana-
+lyze Is and Id to extract details about nearby obstacles in the
+scene and for path planning.
+Semantic segmentation Semantic segmentation is a dense
+prediction task that involves annotating each pixel in an
+image I with a class label. The functionality of a semantic
+segmentation model φsemseg can be formulated as
+Is = φsemseg(I, θ semseg, n) (2)
+
+where θsemseg refers to the parameters of the model φsemseg
+and n is the number of classes to be identified by the segmentation model.
+In a conventional semantic segmentation paradigm, an
+encoder network generates low-resolution feature maps, subsequently upsampled by a decoder network to create a
+full-resolution segmentation map. However, the encoder’s
+sampling technique leads to a loss of image features, resulting in upsampled images with chunky blocks of segments.
+To address this, Long et al. [39] introduced skip connections to fill in the missing features in the sampled segmented
+image. PSPNet [40] enhanced performance by reconstructing data at various levels, enabling necessary adjustments
+during upsampling. DeepLabv3+ [41] selectively incorporates the advantages of encoder-decoder networks to gather
+information from previous steps and uses pyramid pooling
+to encode the image at different scales, restoring more information.
+Recently, a class of semantic segmentation models have
+been introduced that can produce results in real-time or
+near real-time. ICNet [42] builds upon the idea of PSP Net
+and optimizes it by performing more computation on lowresolution features and less computation on high-resolution
+features. PIDNet [43] uses a pyramid dilated convolutional
+neural network architecture that combines dilated convolution with spatial pyramid pooling to capture multi-scale
+contextual information. Topformer [44] uses self-attention
+mechanisms to capture long-range dependencies and context information between pixels. It achieves state-of-the-art
+performance on several benchmark datasets. We use the
+Topformer semantic segmentation model pre-trained on the
+ADE20k dataset for our task. This model has demonstrated
+consistent and dependable segmentation results in real-time,
+making it an ideal choice for a smartphone-based solution.
+Disparity estimation Disparity refers to the difference in
+image location of an object seen by a stereo camera’s left
+and right lenses. Closer objects show a significant disparity. As the objects travel further, the disparity decreases. As
+a result, the disparity can be used to calculate the object’s
+depth from the camera. Previously, disparity computation
+was restricted to stereo camera setups. Advances in deep
+learning have enabled models trained on stereo image pairs
+to estimate disparity from a single input image. The functionality of a disparity estimation model φdisp can be formulated
+as a function of the input image I and model parameters θdisp
+as shown in equation (3).
+Id = φdisp(I, θdisp) (3)
+In the proposed architecture, the pre-trained Midas Depth
+estimation model [13] is used to estimate the disparity image.
+The flexible loss function of the model allows it to be trained
+on multiple datasets with incompatible depth ranges and
+Fig. 3 Combining depth and semantic segmentation for enhanced
+obstacle detection
+scales, making it unique compared to its competitors. The
+zero-shot cross-dataset transfer allows the model to produce
+reliable results even when dealing with new and unknown
+data.
+
+3.2 Obstacle detection module (ODM)
+In the past, obstacle detection heavily relied on precise depth
+data from sources like stereo cameras, RGB-D cameras, or
+Lidar sensors. The emergence of depth estimation models
+has revolutionized this process, offering distance estimates
+to objects within a scene. However, it is important to note
+that depth data alone falls short of providing object identities. In contrast, semantic segmentation assigns semantic
+labels to each pixel in an image, facilitating robust object
+recognition. Despite the advancements in depth estimation
+for detecting nearby objects and semantic segmentation for
+identifying object classes, the effectiveness of these models is
+often compromised when deployed on resource-constrained
+devices using tflite models.
+In Fig. 3, we can observe the depth and semantic segmentation representations of the input image. While the depth
+representation provides a coarse estimate of the objects’
+depth in the scene, the semantic segmentation also exhibits
+reduced clarity in the output segments. To fulfill the objective
+of detecting and identifying nearby objects and to address the
+issue of quality degradation encountered with tflite models,
+we propose a method for fusing depth and segmentation data.
+The proposed idea operates on the assumption that combining the outputs of the semantic segmentation and depth
+estimation tflite models will help compensate for each other’s
+imperfections, leading to an enhanced overall performance.
+As observed in Fig. 3, the combination of depth and semantic segmentation data yields the desired obstacle detection
+results that can be useful in navigation guidance tasks. The
+functionality of ODM is formulated as
+Os = fodm(Is, Id , thresholdd ) (4)
+
+Algorithm 1 Obstacle Detection
+Input: Semantic Segment Image Is , Disparity image Id
+Output: Obstacle Image Os
+1: for semanticLabel ∈ Is do
+2: for each component c ∈ semanticLabel do
+3: disparityc ⇐ max DisparityV alue(c)
+4:
+5: if disparityc ≤ thresholdd Or segment(c) == path then
+6: Discard component
+7: else
+8: Add c to Os
+9: end if
+10: end for
+11: end for
+where thresholdd is the predefined disparity threshold set
+for obstacle detection.
+Algorithm 1 outlines the functionality of the Obstacle Detection Module. Given an input image I, the estimated disparity image Id and semantic segmentation image
+Is is generated using the pre-trained models in DTM.
+ODM is responsible for segregating the different segments
+S0, S1, S2, ...Sn in the image and discarding the segments
+are away from a predefined distance threshold. Through
+extensive experimentation, we have identified that setting
+the disparity threshold at 60% of the maximum disparity
+value effectively detects obstacles in the immediate vicinity. However, the value of the threshold may vary depending
+on application specific requirements.
+The disparity of each segment Si is computed and finalized
+as shown in (5).
+dSi = max(disp(s) : s ∈ Si)
+dSi =
+{
+dSi dSi > thresholdd
+0 Otherwise
+}
+(5)
+
+Figure 4 provides a step-by-step visualization of the steps
+defined in Algorithm 1. The disparity image produced by the
+Midas v2 tflite model provides a rough estimate of the nearer
+and farther pixels in the image. This information is used to
+identify the semantic segments in the image that qualifies for
+nearer objects.
