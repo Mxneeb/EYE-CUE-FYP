@@ -28,20 +28,24 @@ NUM_PANELS = 4         # camera, depth, segmentation, obstacles
 WIN_W = PANEL_W * NUM_PANELS + (NUM_PANELS - 1) * 2  # 2px dividers
 WIN_H = PANEL_H + STATUS_H
 
-# ── PPM Sector Grid (Paper Figs. 5–7) ─────────────────────────────────────
-# Vertical fractions (image coords, y=0 at top of image)
-# Overhead sectors (1,2,3): 60%–90% of H from bottom → 0.1H to 0.4H from top
-PPM_OVERHEAD_TOP = 0.10
-PPM_OVERHEAD_BOT = 0.40
-# Ground sectors (4,5,6): bottom 40% of image → 0.6H to H from top
-PPM_GROUND_TOP = 0.60
+# ── PPM Sector Grid — Full Coverage (No Blind Spots) ──────────────────────
+# Overhead (Sectors 1,2,3): top of frame → 0.5H
+PPM_OVERHEAD_TOP = 0.0
+PPM_OVERHEAD_BOT = 0.50
+# Ground (Sectors 4,5,6): 0.5H → bottom of frame
+PPM_GROUND_TOP = 0.50
 
 # Horizontal column boundaries (landscape orientation, Fig. 5)
 PPM_COL_LEFT = 0.30        # Left column: 0 → 0.3W
 PPM_COL_RIGHT = 0.70       # Right column: 0.7W → W
 
-# OStatus fuzzy baseline threshold
-PPM_OSTATUS_THRESHOLD = 0.30
+# ── Depth gating (3-metre alert radius) ───────────────────────────────────
+# Approximate 3m in normalised disparity (higher = nearer).
+# Pixels with disparity < DEPTH_3M_RATIO * max_disparity are discarded.
+DEPTH_3M_RATIO = 0.40
+
+# OStatus visual threshold (fuzzy crossover point of new MFs)
+PPM_OSTATUS_THRESHOLD = 0.25
 
 # ── Display: overlay mode ──────────────────────────────────────────────────
 INSTRUCTION_BAR_H = 60     # Height of bottom instruction bar (px)

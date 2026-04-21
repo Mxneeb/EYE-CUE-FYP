@@ -1,25 +1,27 @@
 """
-Path Planner Module (PPM) — Paper-accurate fuzzy-logic navigation guidance.
+Path Planner Module (PPM) — Fuzzy-logic navigation guidance with
+depth-gated obstacle masking.
 
-Architecture (from Obs-tackle paper):
-  Fig. 5  — Alert zone: bottom 40% of image, horizontally constrained
-  Fig. 6  — Ground (bottom half) vs overhead (top half) vertical split
-  Fig. 7  — 6-sector grid: [top_left, top_mid, top_right,
-                             bot_left, bot_mid, bot_right]
-            Prominent obstacle = class with max pixel strength in mid sectors
-  Fig. 9  — Trapezoidal fuzzy membership, 3 rules (Move Ahead/Left/Right),
-            centroid defuzzification
-  Fig. 10 — Output: "{obstacle} {ahead|overhead}, Move {left|right|ahead}"
+Pipeline:
+  1. Depth-gated masking:  seg_mask AND (depth < 3m) → valid_obstacle_mask
+  2. 6-sector grid (2×3, full-coverage, no blind spots)
+  3. OStatus computation per sector
+  4. Prominent obstacle identification from mid sectors
+  5. Overlapping trapezoidal fuzzy membership → 3-rule engine
+  6. Centroid (Mamdani) defuzzification → continuous [-1, +1]
+  7. 5-level action classification + STOP safety fallback
 """
 
+import cv2
 import numpy as np
 
 from nav_assist.config import (
-    ADE20K_CLASSES,
+    ADE20K_CLASSES, PATH_CLASS_INDICES,
     ALERT_ZONE_PORTRAIT_X_MARGIN, ALERT_ZONE_LANDSCAPE_X_MARGIN,
     ALERT_ZONE_Y_FRACTION,
     PPM_OVERHEAD_TOP, PPM_OVERHEAD_BOT,
     PPM_GROUND_TOP, PPM_COL_LEFT, PPM_COL_RIGHT,
+    DEPTH_3M_RATIO,
 )
 
 SECTOR_NAMES = [
@@ -53,16 +55,79 @@ def compute_alert_zone(h, w):
 
 
 # ════════════════════════════════════════════════════════════════════════════
+# Depth-Gated Obstacle Masking
+# ════════════════════════════════════════════════════════════════════════════
+
+def create_depth_gated_mask(seg_mask, depth_map, depth_ratio=None):
+    """
+    Create a strict obstacle mask by logical AND of semantic detection
+    and depth proximity.
+
+    Only pixels that (a) belong to a non-walkable semantic class AND
+    (b) fall within the ~3-metre depth threshold are marked as obstacles.
+    Everything further away is strictly zeroed.
+
+    Parameters
+    ----------
+    seg_mask : np.ndarray (H, W) uint8
+        Semantic segmentation class indices (0..149, ADE20K).
+    depth_map : np.ndarray (H, W) float32
+        Disparity / inverse-depth map (higher = nearer).
+    depth_ratio : float, optional
+        Fraction of max disparity for the near-gate.  Defaults to
+        ``DEPTH_3M_RATIO`` from config.
+
+    Returns
+    -------
+    valid_mask : np.ndarray (H, W) bool
+        True where a near, non-walkable obstacle exists.
+    obstacle_labels : np.ndarray (H, W) int16
+        Semantic class ID per obstacle pixel; -1 elsewhere.
+    """
+    if depth_ratio is None:
+        depth_ratio = DEPTH_3M_RATIO
+
+    h, w = seg_mask.shape[:2]
+
+    # Align depth resolution to segmentation
+    if depth_map.shape[:2] != (h, w):
+        depth = cv2.resize(depth_map.astype(np.float32), (w, h),
+                           interpolation=cv2.INTER_LINEAR)
+    else:
+        depth = depth_map.astype(np.float32)
+
+    max_d = depth.max()
+    if max_d < 1e-6:
+        return (np.zeros((h, w), dtype=bool),
+                np.full((h, w), -1, dtype=np.int16))
+
+    # Depth gate: keep only pixels within the ~3 m alert radius
+    near_mask = depth >= (depth_ratio * max_d)
+
+    # Semantic gate: exclude walkable surfaces (floor, road, sidewalk …)
+    path_mask = np.isin(seg_mask, list(PATH_CLASS_INDICES))
+
+    # Valid obstacle = near AND not-walkable
+    valid_mask = near_mask & ~path_mask
+
+    # Per-pixel labels
+    obstacle_labels = np.full((h, w), -1, dtype=np.int16)
+    obstacle_labels[valid_mask] = seg_mask[valid_mask].astype(np.int16)
+
+    return valid_mask, obstacle_labels
+
+
+# ════════════════════════════════════════════════════════════════════════════
 # 6-Sector Grid (Fig. 7)
 # ════════════════════════════════════════════════════════════════════════════
 
 def compute_sector_bounds(h, w):
     """
-    Divide the image into a 2×3 grid (6 sectors) per Paper Figs. 5–7.
+    Divide the image into a 2×3 grid (6 sectors) — **no blind spots**.
 
     Vertical (image coords, y=0 at top):
-      Overhead (Sectors 1,2,3): 0.1H → 0.4H  (= 60%–90% from bottom)
-      Ground   (Sectors 4,5,6): 0.6H → H     (= bottom 40%)
+      Overhead (Sectors 1,2,3): 0 → 0.5H
+      Ground   (Sectors 4,5,6): 0.5H → H
 
     Horizontal (landscape orientation):
       Left (Sectors 1,4): 0 → 0.3W
@@ -175,15 +240,15 @@ def _trapz(x, a, b, c, d):
     return (d - x) / (d - c)
 
 
-# Input MFs for OStatus (0..1)
+# Input MFs for OStatus (0..1) — overlapping, crossover at ~0.25
 def mu_free(v):
-    """Sector is FREE of obstacles."""
-    return _trapz(v, -0.01, 0.0, 0.15, 0.30)
+    """Sector is FREE of obstacles.  1.0 at v≤0.10, drops to 0.0 at v=0.40."""
+    return _trapz(v, -0.01, 0.0, 0.10, 0.40)
 
 
 def mu_blocked(v):
-    """Sector is BLOCKED by obstacles."""
-    return _trapz(v, 0.30, 0.50, 1.0, 1.01)
+    """Sector is BLOCKED by obstacles.  0.0 at v≤0.10, rises to 1.0 at v=0.40."""
+    return _trapz(v, 0.10, 0.40, 1.0, 1.01)
 
 
 # Output MFs over navigation space [-1, 1]  (-1=left, 0=ahead, +1=right)
@@ -260,48 +325,51 @@ def defuzzify(rule_strengths):
 
 
 def classify_action(centroid):
-    """Map defuzzified centroid to a discrete action."""
-    if centroid < -0.20:
+    """Map defuzzified centroid to a 5-level action string."""
+    if centroid < -0.40:
         return 'MOVE LEFT'
-    elif centroid > 0.20:
-        return 'MOVE RIGHT'
-    else:
+    elif centroid < -0.15:
+        return 'MOVE SLIGHT LEFT'
+    elif centroid <= 0.15:
         return 'MOVE AHEAD'
+    elif centroid <= 0.40:
+        return 'MOVE SLIGHT RIGHT'
+    else:
+        return 'MOVE RIGHT'
 
 
 # ════════════════════════════════════════════════════════════════════════════
 # Main Interface
 # ════════════════════════════════════════════════════════════════════════════
 
-def plan_path(obstacle_mask, obstacle_labels, obstacle_info=None):
+def plan_path(seg_mask, depth_map):
     """
-    Full path planner pipeline per paper architecture (Fig. 5-10).
+    Full PPM pipeline: depth-gate → sectors → fuzzy → instruction.
 
     Parameters
     ----------
-    obstacle_mask : np.ndarray (H, W) bool
-        Binary obstacle mask from ODM.
-    obstacle_labels : np.ndarray (H, W) int16
-        Per-pixel semantic class ID (-1 = non-obstacle).
-    obstacle_info : list[dict], optional
-        Obstacle metadata sorted nearest-first.
+    seg_mask : np.ndarray (H, W) uint8
+        Semantic segmentation class indices (ADE20K, 0..149).
+    depth_map : np.ndarray (H, W) float32
+        Disparity / inverse-depth map (higher values = nearer).
 
     Returns
     -------
     instruction : str
-        e.g. "MOVE LEFT — person ahead"
+        e.g. "Desk Ahead. Move Slight Left"
     details : dict
-        action, prominent_obstacle, position, ostatus, rule_strengths, centroid.
+        action, prominent_obstacle, position, ostatus, sector_bounds,
+        sector_labels, rule_strengths, centroid, valid_mask.
     """
-    if obstacle_info is None:
-        obstacle_info = []
+    # ── Depth-gated obstacle mask ──────────────────────────────────────
+    valid_mask, obstacle_labels = create_depth_gated_mask(seg_mask, depth_map)
 
-    h, w = obstacle_mask.shape[:2]
+    h, w = valid_mask.shape[:2]
 
     # ── 6-sector OStatus (Fig. 7) ──────────────────────────────────────
     sector_bounds = compute_sector_bounds(h, w)
     ostatus, sector_labels = compute_ostatus(
-        obstacle_mask, obstacle_labels, sector_bounds)
+        valid_mask, obstacle_labels, sector_bounds)
 
     # ── Prominent obstacle from mid sectors (Fig. 7) ───────────────────
     prominent_name, prominent_id, position = find_prominent_obstacle(
@@ -315,11 +383,11 @@ def plan_path(obstacle_mask, obstacle_labels, obstacle_info=None):
     action = classify_action(centroid)
 
     # ── STOP override: all bottom sectors heavily blocked ──────────────
-    if all(ostatus[s] > 0.45 for s in ('bot_left', 'bot_mid', 'bot_right')):
+    if all(ostatus[s] > 0.50 for s in ('bot_left', 'bot_mid', 'bot_right')):
         action = 'STOP'
 
-    # ── Format instruction (Fig. 10) ──────────────────────────────────
-    action_display = action.title()   # "Move Left", "Move Right", "Move Ahead"
+    # ── Format instruction ────────────────────────────────────────────
+    action_display = action.title()   # e.g. "Move Slight Left"
     if action == 'STOP':
         instruction = 'Stop'
     elif prominent_name:
@@ -338,6 +406,7 @@ def plan_path(obstacle_mask, obstacle_labels, obstacle_info=None):
         'sector_labels': sector_labels,
         'rule_strengths': rule_strengths,
         'centroid': centroid,
+        'valid_mask': valid_mask,
     }
 
     return instruction, details

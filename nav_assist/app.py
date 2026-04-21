@@ -37,7 +37,6 @@ from nav_assist.config import (
     PANEL_W, PANEL_H, INSTRUCTION_BAR_H,
 )
 from nav_assist.workers import DepthWorker, SegWorker
-from nav_assist.obstacle import detect_obstacles
 from nav_assist.path_planner import plan_path
 from nav_assist.visualization import build_navigation_overlay
 from nav_assist.audio import AudioFeedback
@@ -159,14 +158,9 @@ def main():
             depth_fps = shared['depth_fps']
             seg_fps = shared['seg_fps']
 
-        # ── Obstacle Detection Module ───────────────────────────────────
+        # ── Path Planner (depth-gated + fuzzy logic) ──────────────────
         t_obs = time.perf_counter()
-        obstacle_bgr, obstacle_mask, obstacle_info, obstacle_labels = (
-            detect_obstacles(seg_mask, depth_np))
-
-        # ── Path Planner ────────────────────────────────────────────────
-        nav_instruction, planner_details = plan_path(
-            obstacle_mask, obstacle_labels, obstacle_info)
+        nav_instruction, planner_details = plan_path(seg_mask, depth_np)
 
         obs_fps = 1.0 / max(time.perf_counter() - t_obs, 1e-6)
 
