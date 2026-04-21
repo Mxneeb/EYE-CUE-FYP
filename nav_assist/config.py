@@ -28,6 +28,11 @@ NUM_PANELS = 4         # camera, depth, segmentation, obstacles
 WIN_W = PANEL_W * NUM_PANELS + (NUM_PANELS - 1) * 2  # 2px dividers
 WIN_H = PANEL_H + STATUS_H
 
+# ── Inference pacing ───────────────────────────────────────────────────────
+# Cap both model workers to the same update cadence to reduce temporal skew
+# between segmentation and depth during fusion.
+MAX_MODEL_FPS = 5.0
+
 # ── ADE20K normalisation (same as training) ────────────────────────────────
 ADE_MEAN = np.array([123.675, 116.28, 103.53], dtype=np.float32)
 ADE_STD = np.array([58.395, 57.12, 57.375], dtype=np.float32)
@@ -36,6 +41,11 @@ SEG_SIZE = 512         # ONNX model fixed input size
 # ── Obstacle detection parameters ──────────────────────────────────────────
 DISPARITY_THRESHOLD_RATIO = 0.60   # 60% of max disparity (from paper)
 MIN_COMPONENT_AREA = 100           # minimum pixel area for a component
+
+# ── Alert zone geometry (Fig. 5) ───────────────────────────────────────────
+ALERT_ZONE_PORTRAIT_X_MARGIN = 0.20   # 0.2W from each side in portrait
+ALERT_ZONE_LANDSCAPE_X_MARGIN = 0.30  # 0.3W from each side in landscape
+ALERT_ZONE_Y_FRACTION = 0.40          # bottom 40% of image height
 
 # ── Path classes (ADE20K indices that represent walkable surfaces) ──────────
 # These are discarded during obstacle detection per Algorithm 1

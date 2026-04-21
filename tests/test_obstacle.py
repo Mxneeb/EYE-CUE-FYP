@@ -3,7 +3,7 @@
 import numpy as np
 import pytest
 
-from nav_assist.obstacle import detect_obstacles, get_zone_obstacles
+from nav_assist.obstacle import detect_obstacles
 from nav_assist.config import PATH_CLASS_INDICES, ADE20K_CLASS_TO_IDX
 
 
@@ -19,7 +19,7 @@ class TestDetectObstacles:
     def test_empty_scene_returns_no_obstacles(self):
         """No objects, no depth -> no obstacles."""
         seg, depth = self._make_inputs()
-        obs_bgr, obs_mask, obs_info = detect_obstacles(seg, depth)
+        obs_bgr, obs_mask, obs_info, obs_labels = detect_obstacles(seg, depth)
 
         assert obs_bgr.shape == (100, 150, 3)
         assert obs_mask.shape == (100, 150)
@@ -38,7 +38,7 @@ class TestDetectObstacles:
         depth[:] = 0.3    # background far
         depth[30:70, 50:100] = 1.0   # chair very close
 
-        obs_bgr, obs_mask, obs_info = detect_obstacles(seg, depth)
+        obs_bgr, obs_mask, obs_info, obs_labels = detect_obstacles(seg, depth)
 
         assert obs_mask.sum() > 0, "Nearby chair should be detected"
         assert len(obs_info) >= 1
@@ -55,7 +55,7 @@ class TestDetectObstacles:
         depth[:] = 0.5
         depth[30:70, 50:100] = 0.55  # barely above background
 
-        obs_bgr, obs_mask, obs_info = detect_obstacles(
+        obs_bgr, obs_mask, obs_info, obs_labels = detect_obstacles(
             seg, depth, threshold_ratio=0.60)
 
         # 0.55 / 0.55 * 0.60 = 0.33 threshold; 0.55 > 0.33 so it should be detected
@@ -65,7 +65,7 @@ class TestDetectObstacles:
         depth[:] = 1.0      # background close (max disp = 1.0)
         depth[30:70, 50:100] = 0.3  # object far
 
-        obs_bgr, obs_mask, obs_info = detect_obstacles(
+        obs_bgr, obs_mask, obs_info, obs_labels = detect_obstacles(
             seg, depth, threshold_ratio=0.60)
 
         # threshold = 0.60 * 1.0 = 0.6. Object disp = 0.3 < 0.6 => discarded
@@ -82,7 +82,7 @@ class TestDetectObstacles:
         depth[:] = 0.2
         depth[50:100, :] = 1.0
 
-        obs_bgr, obs_mask, obs_info = detect_obstacles(seg, depth)
+        obs_bgr, obs_mask, obs_info, obs_labels = detect_obstacles(seg, depth)
 
         # Floor is a path class — should not appear as obstacle
         assert floor_id in PATH_CLASS_INDICES
@@ -97,7 +97,7 @@ class TestDetectObstacles:
         depth[10:13, 10:13] = 1.0
         depth[:] = np.where(depth == 0, 0.1, depth)
 
-        obs_bgr, obs_mask, obs_info = detect_obstacles(
+        obs_bgr, obs_mask, obs_info, obs_labels = detect_obstacles(
             seg, depth, min_area=50)
 
         assert obs_mask.sum() == 0, "Tiny component should be filtered"
@@ -116,7 +116,7 @@ class TestDetectObstacles:
         depth[20:40, 10:50] = 1.0
         depth[60:80, 120:170] = 0.9
 
-        obs_bgr, obs_mask, obs_info = detect_obstacles(seg, depth)
+        obs_bgr, obs_mask, obs_info, obs_labels = detect_obstacles(seg, depth)
 
         assert len(obs_info) >= 2, "Should detect both chair and table"
         names = {o['class_name'] for o in obs_info}
@@ -137,7 +137,7 @@ class TestDetectObstacles:
         depth[20:40, 10:50] = 0.8    # chair: closer
         depth[60:80, 120:170] = 1.0  # table: nearest
 
-        obs_bgr, obs_mask, obs_info = detect_obstacles(seg, depth)
+        obs_bgr, obs_mask, obs_info, obs_labels = detect_obstacles(seg, depth)
 
         assert len(obs_info) >= 2
         assert obs_info[0]['disparity'] >= obs_info[1]['disparity']
@@ -152,59 +152,26 @@ class TestDetectObstacles:
         depth[:] = 0.1
         depth[60:140, 100:200] = 1.0  # scaled region
 
-        obs_bgr, obs_mask, obs_info = detect_obstacles(seg, depth)
+        obs_bgr, obs_mask, obs_info, obs_labels = detect_obstacles(seg, depth)
 
         # Should not crash; output matches seg resolution
         assert obs_bgr.shape == (100, 150, 3)
         assert obs_mask.shape == (100, 150)
 
+    def test_obstacle_labels_returned(self):
+        """detect_obstacles returns per-pixel semantic labels for obstacles."""
+        seg, depth = self._make_inputs()
 
-class TestGetZoneObstacles:
-    """Tests for get_zone_obstacles()."""
+        chair_id = ADE20K_CLASS_TO_IDX['chair']
+        seg[30:70, 50:100] = chair_id
+        depth[:] = 0.3
+        depth[30:70, 50:100] = 1.0
 
-    def test_empty_scene(self):
-        obstacle_mask = np.zeros((100, 150), dtype=bool)
-        zones = get_zone_obstacles(obstacle_mask, [], 150)
+        _, obs_mask, _, obs_labels = detect_obstacles(seg, depth)
 
-        assert zones['left']['density'] == 0.0
-        assert zones['center']['density'] == 0.0
-        assert zones['right']['density'] == 0.0
-
-    def test_obstacle_in_left_zone(self):
-        obstacle_mask = np.zeros((100, 150), dtype=bool)
-        obstacle_mask[20:80, 10:40] = True
-
-        obstacle_info = [{
-            'class_id': 19, 'class_name': 'chair',
-            'disparity': 0.9,
-            'bbox': (10, 20, 40, 80), 'area': 1800,
-            'centroid': (25, 50),  # x=25, in left zone (0-50)
-        }]
-
-        zones = get_zone_obstacles(obstacle_mask, obstacle_info, 150)
-
-        assert zones['left']['density'] > 0
-        assert zones['center']['density'] == 0
-        assert zones['right']['density'] == 0
-        assert len(zones['left']['obstacles']) == 1
-
-    def test_all_three_zones(self):
-        obstacle_mask = np.zeros((100, 300), dtype=bool)
-        obstacle_mask[10:30, 10:30] = True    # left
-        obstacle_mask[40:60, 130:170] = True  # center
-        obstacle_mask[70:90, 250:280] = True  # right
-
-        obstacle_info = [
-            {'class_id': 19, 'class_name': 'chair', 'disparity': 0.9,
-             'bbox': (10, 10, 30, 30), 'area': 400, 'centroid': (20, 20)},
-            {'class_id': 15, 'class_name': 'table', 'disparity': 0.8,
-             'bbox': (130, 40, 170, 60), 'area': 800, 'centroid': (150, 50)},
-            {'class_id': 23, 'class_name': 'sofa', 'disparity': 0.7,
-             'bbox': (250, 70, 280, 90), 'area': 600, 'centroid': (265, 80)},
-        ]
-
-        zones = get_zone_obstacles(obstacle_mask, obstacle_info, 300)
-
-        assert zones['left']['density'] > 0
-        assert zones['center']['density'] > 0
-        assert zones['right']['density'] > 0
+        assert obs_labels.shape == (100, 150)
+        assert obs_labels.dtype == np.int16
+        # Obstacle pixels should have chair_id
+        assert (obs_labels[obs_mask] == chair_id).all()
+        # Non-obstacle pixels should be -1
+        assert (obs_labels[~obs_mask] == -1).all()

@@ -173,12 +173,16 @@ def build_seg_panel(frame, seg_mask, seg_fps):
     return panel
 
 
-def build_obstacle_panel(obstacle_img, nav_instruction, obs_fps):
+def build_obstacle_panel(obstacle_img, nav_instruction, obs_fps,
+                         obstacle_info=None):
     """
     Obstacle detection output: fused depth+segmentation obstacle image.
     Shows identified obstacles coloured by their semantic class,
-    with navigation instruction overlay.
+    nearest obstacle label, and navigation instruction overlay.
     """
+    if obstacle_info is None:
+        obstacle_info = []
+
     panel = cv2.resize(obstacle_img, (PANEL_W, PANEL_H),
                        interpolation=cv2.INTER_NEAREST)
 
@@ -189,15 +193,26 @@ def build_obstacle_panel(obstacle_img, nav_instruction, obs_fps):
     put_text(panel, f'{obs_fps:.1f} fps', (PANEL_W - 75, 18),
              scale=0.45, color=(100, 220, 100))
 
+    # Nearest obstacle label (immediately below header)
+    if obstacle_info:
+        nearest = obstacle_info[0]
+        label = nearest['class_name'].upper()
+        cv2.rectangle(panel, (0, 28), (PANEL_W, 52), (15, 15, 15), -1)
+        put_text(panel, f'NEAREST: {label}', (8, 46),
+                 scale=0.48, color=(0, 200, 255), bg_color=(0, 0, 0))
+    else:
+        cv2.rectangle(panel, (0, 28), (PANEL_W, 52), (15, 15, 15), -1)
+        put_text(panel, 'NO OBSTACLES', (8, 46),
+                 scale=0.48, color=(0, 255, 100), bg_color=(0, 0, 0))
+
     # Navigation instruction overlay at bottom
     if nav_instruction:
         cv2.rectangle(panel, (0, PANEL_H - 40), (PANEL_W, PANEL_H),
                       (0, 0, 0), -1)
-        # Colour code: green=safe, yellow=caution, red=danger
         inst_lower = nav_instruction.lower()
-        if 'stop' in inst_lower or 'blocked' in inst_lower:
+        if 'stop' in inst_lower:
             color = (0, 0, 255)     # red
-        elif 'caution' in inst_lower:
+        elif 'left' in inst_lower or 'right' in inst_lower:
             color = (0, 200, 255)   # yellow
         else:
             color = (0, 255, 100)   # green
