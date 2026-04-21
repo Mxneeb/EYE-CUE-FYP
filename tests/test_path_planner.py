@@ -47,18 +47,42 @@ class TestSectorBounds:
                     'bot_left', 'bot_mid', 'bot_right'}
         assert set(bounds.keys()) == expected
 
-    def test_sectors_cover_image(self):
+    def test_overhead_region_matches_paper(self):
+        """Overhead sectors span 0.1H to 0.4H from top (Fig. 6)."""
+        bounds = compute_sector_bounds(480, 640)
+        assert bounds['top_mid'][0] == int(0.10 * 480)   # y0 = 48
+        assert bounds['top_mid'][1] == int(0.40 * 480)   # y1 = 192
+
+    def test_ground_region_matches_paper(self):
+        """Ground sectors span 0.6H to H from top (Fig. 6)."""
+        bounds = compute_sector_bounds(480, 640)
+        assert bounds['bot_mid'][0] == int(0.60 * 480)   # y0 = 288
+        assert bounds['bot_mid'][1] == 480                # y1 = H
+
+    def test_column_widths_30_40_30(self):
+        """Columns are 30%/40%/30% of W (Fig. 5 landscape)."""
+        bounds = compute_sector_bounds(480, 640)
+        assert bounds['top_left'][2] == 0                 # x0
+        assert bounds['top_left'][3] == int(0.30 * 640)   # x1 = 192
+        assert bounds['top_mid'][2] == int(0.30 * 640)    # x0 = 192
+        assert bounds['top_mid'][3] == int(0.70 * 640)    # x1 = 448
+        assert bounds['top_right'][2] == int(0.70 * 640)  # x0 = 448
+        assert bounds['top_right'][3] == 640              # x1 = W
+
+    def test_sectors_within_image_bounds(self):
         h, w = 100, 300
         bounds = compute_sector_bounds(h, w)
-        covered = np.zeros((h, w), dtype=bool)
         for y0, y1, x0, x1 in bounds.values():
-            covered[y0:y1, x0:x1] = True
-        assert covered.all()
+            assert 0 <= y0 < y1 <= h
+            assert 0 <= x0 < x1 <= w
 
-    def test_top_bottom_split_at_half(self):
-        bounds = compute_sector_bounds(200, 300)
-        assert bounds['top_mid'][1] == 100
-        assert bounds['bot_mid'][0] == 100
+    def test_sectors_do_not_overlap(self):
+        h, w = 480, 640
+        bounds = compute_sector_bounds(h, w)
+        canvas = np.zeros((h, w), dtype=np.int32)
+        for y0, y1, x0, x1 in bounds.values():
+            assert (canvas[y0:y1, x0:x1] == 0).all(), "Sectors overlap"
+            canvas[y0:y1, x0:x1] = 1
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -80,12 +104,12 @@ class TestOStatus:
             assert sector_labels[name] == {}
 
     def test_full_obstacle_in_one_sector(self):
-        h, w = 100, 300
+        h, w = 480, 640
         mask = np.zeros((h, w), dtype=bool)
         labels = np.full((h, w), -1, dtype=np.int16)
         bounds = compute_sector_bounds(h, w)
 
-        # Fill bot_mid entirely with obstacles
+        # Fill bot_mid entirely with obstacles (using actual sector bounds)
         y0, y1, x0, x1 = bounds['bot_mid']
         mask[y0:y1, x0:x1] = True
         labels[y0:y1, x0:x1] = 19  # chair
@@ -177,6 +201,7 @@ class TestFuzzyMembership:
 class TestRuleEvaluation:
 
     def test_clear_path_fires_ahead(self):
+        """All sectors free → Move Ahead dominates."""
         ostatus = {s: 0.0 for s in [
             'top_left', 'top_mid', 'top_right',
             'bot_left', 'bot_mid', 'bot_right',
@@ -186,45 +211,58 @@ class TestRuleEvaluation:
         assert rules['move_left'] < 0.1
         assert rules['move_right'] < 0.1
 
-    def test_right_blocked_fires_left(self):
-        """bot = [0.0, 0.36, 0.9] -> should move left (per Fig. 9)."""
+    def test_mid_and_right_blocked_fires_left(self):
+        """Mid and right blocked, left free → Move Left."""
         ostatus = {s: 0.0 for s in [
             'top_left', 'top_mid', 'top_right',
             'bot_left', 'bot_mid', 'bot_right',
         ]}
-        ostatus['bot_left'] = 0.0
-        ostatus['bot_mid'] = 0.36
+        ostatus['bot_mid'] = 0.7
         ostatus['bot_right'] = 0.9
 
         rules = evaluate_rules(ostatus)
         assert rules['move_left'] > rules['move_right']
+        assert rules['move_left'] > rules['move_ahead']
 
-    def test_left_blocked_fires_right(self):
-        """bot = [0.49, 0.29, 0.0] -> should move right (per Fig. 9)."""
+    def test_mid_and_left_blocked_fires_right(self):
+        """Mid and left blocked, right free → Move Right."""
         ostatus = {s: 0.0 for s in [
             'top_left', 'top_mid', 'top_right',
             'bot_left', 'bot_mid', 'bot_right',
         ]}
-        ostatus['bot_left'] = 0.49
-        ostatus['bot_mid'] = 0.29
-        ostatus['bot_right'] = 0.0
+        ostatus['bot_left'] = 0.8
+        ostatus['bot_mid'] = 0.7
 
         rules = evaluate_rules(ostatus)
         assert rules['move_right'] > rules['move_left']
+        assert rules['move_right'] > rules['move_ahead']
 
     def test_center_free_fires_ahead(self):
-        """bot = [0.13, 0.0, 0.60] -> should move ahead (per Fig. 9)."""
+        """Both mid sectors free → Move Ahead regardless of sides."""
         ostatus = {s: 0.0 for s in [
             'top_left', 'top_mid', 'top_right',
             'bot_left', 'bot_mid', 'bot_right',
         ]}
-        ostatus['bot_left'] = 0.13
-        ostatus['bot_mid'] = 0.0
-        ostatus['bot_right'] = 0.60
+        ostatus['bot_left'] = 0.8
+        ostatus['bot_right'] = 0.8
+        # top_mid=0, bot_mid=0 → mid is free
 
         rules = evaluate_rules(ostatus)
         assert rules['move_ahead'] > rules['move_left']
         assert rules['move_ahead'] > rules['move_right']
+
+    def test_overhead_mid_blocked_triggers_avoidance(self):
+        """Overhead obstacle in mid triggers avoidance even if ground mid free."""
+        ostatus = {s: 0.0 for s in [
+            'top_left', 'top_mid', 'top_right',
+            'bot_left', 'bot_mid', 'bot_right',
+        ]}
+        ostatus['top_mid'] = 0.8
+        ostatus['top_left'] = 0.8  # block left to force right
+
+        rules = evaluate_rules(ostatus)
+        # top_mid blocked → mid_blocked fires, right free → Move Right
+        assert rules['move_right'] > rules['move_ahead']
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -278,7 +316,7 @@ class TestClassifyAction:
 
 class TestPlanPath:
 
-    def _make_inputs(self, h=100, w=300):
+    def _make_inputs(self, h=480, w=640):
         mask = np.zeros((h, w), dtype=bool)
         labels = np.full((h, w), -1, dtype=np.int16)
         return mask, labels
@@ -287,63 +325,104 @@ class TestPlanPath:
         mask, labels = self._make_inputs()
         instruction, details = plan_path(mask, labels)
 
-        assert 'MOVE AHEAD' in instruction
-        assert 'path clear' in instruction
         assert details['action'] == 'MOVE AHEAD'
+        assert instruction == 'Move Ahead'
 
-    def test_obstacle_right_move_left(self):
-        h, w = 100, 300
+    def test_obstacle_mid_and_right_move_left(self):
+        h, w = 480, 640
         mask = np.zeros((h, w), dtype=bool)
         labels = np.full((h, w), -1, dtype=np.int16)
+        bounds = compute_sector_bounds(h, w)
 
-        # Fill bot_right with obstacles
-        mask[50:100, 200:300] = True
-        labels[50:100, 200:300] = 12  # person
+        # Block bot_mid and bot_right → should move left
+        for name in ('bot_mid', 'bot_right'):
+            y0, y1, x0, x1 = bounds[name]
+            mask[y0:y1, x0:x1] = True
+            labels[y0:y1, x0:x1] = 12  # person
 
         instruction, details = plan_path(mask, labels)
-        assert details['action'] in ('MOVE LEFT', 'MOVE AHEAD')
+        assert details['action'] == 'MOVE LEFT'
 
-    def test_obstacle_left_move_right(self):
-        h, w = 100, 300
+    def test_obstacle_mid_and_left_move_right(self):
+        h, w = 480, 640
         mask = np.zeros((h, w), dtype=bool)
         labels = np.full((h, w), -1, dtype=np.int16)
+        bounds = compute_sector_bounds(h, w)
 
-        # Fill bot_left with obstacles
-        mask[50:100, 0:100] = True
-        labels[50:100, 0:100] = 19  # chair
+        # Block bot_mid and bot_left → should move right
+        for name in ('bot_mid', 'bot_left'):
+            y0, y1, x0, x1 = bounds[name]
+            mask[y0:y1, x0:x1] = True
+            labels[y0:y1, x0:x1] = 19  # chair
 
         instruction, details = plan_path(mask, labels)
-        assert details['action'] in ('MOVE RIGHT', 'MOVE AHEAD')
+        assert details['action'] == 'MOVE RIGHT'
 
     def test_all_blocked_stop(self):
-        h, w = 100, 300
+        h, w = 480, 640
         mask = np.ones((h, w), dtype=bool)
         labels = np.full((h, w), 12, dtype=np.int16)  # person everywhere
 
         instruction, details = plan_path(mask, labels)
         assert details['action'] == 'STOP'
-        assert 'STOP' in instruction
+        assert instruction == 'Stop'
 
     def test_prominent_obstacle_in_instruction(self):
-        h, w = 100, 300
+        h, w = 480, 640
         mask = np.zeros((h, w), dtype=bool)
         labels = np.full((h, w), -1, dtype=np.int16)
+        bounds = compute_sector_bounds(h, w)
 
         # Put a person in bot_mid (prominent mid-sector obstacle)
-        mask[50:100, 100:200] = True
-        labels[50:100, 100:200] = 12  # person
+        y0, y1, x0, x1 = bounds['bot_mid']
+        mask[y0:y1, x0:x1] = True
+        labels[y0:y1, x0:x1] = 12  # person
 
         instruction, details = plan_path(mask, labels)
         assert details['prominent_obstacle'] == 'person'
-        assert 'person' in instruction
+        assert 'Person' in instruction
+
+    def test_instruction_format_with_obstacle(self):
+        """Instruction format: '{Obstacle} {position}. {Action}'."""
+        h, w = 480, 640
+        mask = np.zeros((h, w), dtype=bool)
+        labels = np.full((h, w), -1, dtype=np.int16)
+        bounds = compute_sector_bounds(h, w)
+
+        # Block bot_mid and bot_right with chair → Move Left
+        for name in ('bot_mid', 'bot_right'):
+            y0, y1, x0, x1 = bounds[name]
+            mask[y0:y1, x0:x1] = True
+            labels[y0:y1, x0:x1] = 19  # chair
+
+        instruction, details = plan_path(mask, labels)
+        assert 'Chair' in instruction
+        assert 'Move Left' in instruction
+
+    def test_overhead_obstacle_format(self):
+        """Overhead obstacle shows 'overhead' position in instruction."""
+        h, w = 480, 640
+        mask = np.zeros((h, w), dtype=bool)
+        labels = np.full((h, w), -1, dtype=np.int16)
+        bounds = compute_sector_bounds(h, w)
+
+        # Block top_mid and top_left with ceiling → Move Right
+        for name in ('top_mid', 'top_left'):
+            y0, y1, x0, x1 = bounds[name]
+            mask[y0:y1, x0:x1] = True
+            labels[y0:y1, x0:x1] = 5  # ceiling
+
+        instruction, details = plan_path(mask, labels)
+        assert 'overhead' in instruction
+        assert 'Move Right' in instruction
 
     def test_details_contains_expected_keys(self):
         mask, labels = self._make_inputs()
         _, details = plan_path(mask, labels)
 
         expected_keys = {'action', 'prominent_obstacle', 'position',
-                         'ostatus', 'sector_labels', 'rule_strengths',
-                         'centroid'}
+                         'ostatus', 'sector_bounds', 'sector_labels',
+                         'rule_strengths', 'centroid'}
         assert expected_keys == set(details.keys())
 
     def test_ostatus_has_six_sectors(self):
@@ -352,13 +431,22 @@ class TestPlanPath:
 
         assert len(details['ostatus']) == 6
 
+    def test_sector_bounds_in_details(self):
+        mask, labels = self._make_inputs()
+        _, details = plan_path(mask, labels)
+
+        assert 'sector_bounds' in details
+        assert len(details['sector_bounds']) == 6
+
     def test_position_ahead_or_overhead(self):
-        h, w = 100, 300
+        h, w = 480, 640
         mask = np.zeros((h, w), dtype=bool)
         labels = np.full((h, w), -1, dtype=np.int16)
+        bounds = compute_sector_bounds(h, w)
 
-        mask[50:100, 100:200] = True
-        labels[50:100, 100:200] = 19
+        y0, y1, x0, x1 = bounds['bot_mid']
+        mask[y0:y1, x0:x1] = True
+        labels[y0:y1, x0:x1] = 19
 
         _, details = plan_path(mask, labels)
         assert details['position'] in ('ahead', 'overhead')

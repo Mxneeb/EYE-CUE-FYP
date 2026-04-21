@@ -18,6 +18,8 @@ from nav_assist.config import (
     ADE20K_CLASSES,
     ALERT_ZONE_PORTRAIT_X_MARGIN, ALERT_ZONE_LANDSCAPE_X_MARGIN,
     ALERT_ZONE_Y_FRACTION,
+    PPM_OVERHEAD_TOP, PPM_OVERHEAD_BOT,
+    PPM_GROUND_TOP, PPM_COL_LEFT, PPM_COL_RIGHT,
 )
 
 SECTOR_NAMES = [
@@ -56,22 +58,33 @@ def compute_alert_zone(h, w):
 
 def compute_sector_bounds(h, w):
     """
-    Divide the image into a 3x2 grid (Fig. 7):
-        [1:top_left | 2:top_mid | 3:top_right]   ← overhead region
-        [4:bot_left | 5:bot_mid | 6:bot_right]   ← ground region
+    Divide the image into a 2×3 grid (6 sectors) per Paper Figs. 5–7.
+
+    Vertical (image coords, y=0 at top):
+      Overhead (Sectors 1,2,3): 0.1H → 0.4H  (= 60%–90% from bottom)
+      Ground   (Sectors 4,5,6): 0.6H → H     (= bottom 40%)
+
+    Horizontal (landscape orientation):
+      Left (Sectors 1,4): 0 → 0.3W
+      Mid  (Sectors 2,5): 0.3W → 0.7W
+      Right(Sectors 3,6): 0.7W → W
 
     Returns dict: sector_name -> (y0, y1, x0, x1).
     """
-    row_split = h // 2
-    c1, c2 = w // 3, 2 * w // 3
+    oh_top = int(PPM_OVERHEAD_TOP * h)
+    oh_bot = int(PPM_OVERHEAD_BOT * h)
+    gr_top = int(PPM_GROUND_TOP * h)
+
+    c_left = int(PPM_COL_LEFT * w)
+    c_right = int(PPM_COL_RIGHT * w)
 
     return {
-        'top_left':  (0, row_split, 0,  c1),
-        'top_mid':   (0, row_split, c1, c2),
-        'top_right': (0, row_split, c2, w),
-        'bot_left':  (row_split, h, 0,  c1),
-        'bot_mid':   (row_split, h, c1, c2),
-        'bot_right': (row_split, h, c2, w),
+        'top_left':  (oh_top, oh_bot, 0,       c_left),
+        'top_mid':   (oh_top, oh_bot, c_left,  c_right),
+        'top_right': (oh_top, oh_bot, c_right, w),
+        'bot_left':  (gr_top, h,     0,       c_left),
+        'bot_mid':   (gr_top, h,     c_left,  c_right),
+        'bot_right': (gr_top, h,     c_right, w),
     }
 
 
@@ -192,32 +205,34 @@ def _mu_out_right(x):
 
 def evaluate_rules(ostatus):
     """
-    Evaluate the three fuzzy rules from Fig. 9.
+    Evaluate three fuzzy rules using both overhead and ground sectors.
 
-    Rule 1 (Move Ahead): IF bot_mid is FREE
-    Rule 2 (Move Left):  IF right/center BLOCKED AND left FREE AND center NOT FREE
-    Rule 3 (Move Right): IF left/center BLOCKED AND right FREE AND center NOT FREE
+    Rule 1 (Move Ahead):  IF top_mid AND bot_mid are "no-obstacle"
+    Rule 2 (Move Left):   IF (top_mid OR bot_mid is "obstacle")
+                           AND (top_left AND bot_left are "no-obstacle")
+    Rule 3 (Move Right):  IF (top_mid OR bot_mid is "obstacle")
+                           AND (top_right AND bot_right are "no-obstacle")
 
     Returns dict with firing strengths for each rule.
     """
-    bl = ostatus['bot_left']
+    tm = ostatus['top_mid']
     bm = ostatus['bot_mid']
+    tl = ostatus['top_left']
+    bl = ostatus['bot_left']
+    tr = ostatus['top_right']
     br = ostatus['bot_right']
 
-    not_free_mid = 1.0 - mu_free(bm)
+    # Rule 1: Move Ahead — both mid sectors are free
+    r1 = min(mu_free(tm), mu_free(bm))
 
-    # Rule 1: Move Ahead — center ground path is free
-    r1 = mu_free(bm)
+    # Rule 2: Move Left — mid is blocked AND left side is free
+    mid_blocked = max(mu_blocked(tm), mu_blocked(bm))
+    left_free = min(mu_free(tl), mu_free(bl))
+    r2 = min(mid_blocked, left_free)
 
-    # Rule 2: Move Left — obstacles on right, left is free
-    r2a = min(mu_blocked(br), mu_free(bl), not_free_mid)
-    r2b = min(mu_blocked(bm), mu_free(bl))
-    r2 = max(r2a, r2b)
-
-    # Rule 3: Move Right — obstacles on left, right is free
-    r3a = min(mu_blocked(bl), mu_free(br), not_free_mid)
-    r3b = min(mu_blocked(bm), mu_free(br))
-    r3 = max(r3a, r3b)
+    # Rule 3: Move Right — mid is blocked AND right side is free
+    right_free = min(mu_free(tr), mu_free(br))
+    r3 = min(mid_blocked, right_free)
 
     return {'move_ahead': r1, 'move_left': r2, 'move_right': r3}
 
@@ -304,18 +319,22 @@ def plan_path(obstacle_mask, obstacle_labels, obstacle_info=None):
         action = 'STOP'
 
     # ── Format instruction (Fig. 10) ──────────────────────────────────
-    if prominent_name:
-        instruction = f'{action} — {prominent_name} {position}'
-    elif action == 'MOVE AHEAD':
-        instruction = f'{action} — path clear'
+    action_display = action.title()   # "Move Left", "Move Right", "Move Ahead"
+    if action == 'STOP':
+        instruction = 'Stop'
+    elif prominent_name:
+        obs_display = prominent_name.capitalize()
+        pos_display = 'Ahead' if position == 'ahead' else 'overhead'
+        instruction = f'{obs_display} {pos_display}. {action_display}'
     else:
-        instruction = action
+        instruction = action_display
 
     details = {
         'action': action,
         'prominent_obstacle': prominent_name,
         'position': position,
         'ostatus': ostatus,
+        'sector_bounds': sector_bounds,
         'sector_labels': sector_labels,
         'rule_strengths': rule_strengths,
         'centroid': centroid,

@@ -34,15 +34,12 @@ matplotlib.use('Agg')
 from nav_assist.config import (
     ROOT, DEPTH_SRC, DEPTH_CKPT, SEG_ONNX, SCREENSHOT_DIR,
     DEPTH_ENCODER, DEPTH_FEATURES, DEPTH_OUT_CHANNELS,
-    PANEL_W, PANEL_H, STATUS_H, WIN_W, WIN_H, MAX_MODEL_FPS,
+    PANEL_W, PANEL_H, INSTRUCTION_BAR_H,
 )
 from nav_assist.workers import DepthWorker, SegWorker
 from nav_assist.obstacle import detect_obstacles
 from nav_assist.path_planner import plan_path
-from nav_assist.visualization import (
-    build_camera_panel, build_depth_panel, build_seg_panel,
-    build_obstacle_panel, build_status_bar,
-)
+from nav_assist.visualization import build_navigation_overlay
 from nav_assist.audio import AudioFeedback
 
 
@@ -116,17 +113,15 @@ def main():
     stop_event = threading.Event()
 
     # ── Spawn DTM workers ───────────────────────────────────────────────
-    depth_worker = DepthWorker(
-        depth_model, shared, lock, stop_event, max_fps=MAX_MODEL_FPS)
-    seg_worker   = SegWorker(
-        seg_session, shared, lock, stop_event, max_fps=MAX_MODEL_FPS)
+    depth_worker = DepthWorker(depth_model, shared, lock, stop_event)
+    seg_worker   = SegWorker(seg_session, shared, lock, stop_event)
     depth_worker.start()
     seg_worker.start()
 
     # ── Window ──────────────────────────────────────────────────────────
     win_name = 'Obs-tackle: Navigation Assistance System'
     cv2.namedWindow(win_name, cv2.WINDOW_NORMAL)
-    cv2.resizeWindow(win_name, WIN_W, WIN_H)
+    cv2.resizeWindow(win_name, actual_w, actual_h + INSTRUCTION_BAR_H)
 
     # ── Main display loop ───────────────────────────────────────────────
     cam_fps = 0.0
@@ -179,21 +174,11 @@ def main():
         speech_text = nav_instruction.replace(' — ', ', ')
         audio.speak(speech_text)
 
-        # ── Build panels ────────────────────────────────────────────────
-        cam_panel = build_camera_panel(frame, cam_fps)
-        depth_panel = build_depth_panel(frame, depth_np, depth_fps)
-        seg_panel = build_seg_panel(frame, seg_mask, seg_fps)
-        obs_panel = build_obstacle_panel(obstacle_bgr, nav_instruction,
-                                         obs_fps, obstacle_info)
-
-        # ── Compose display ─────────────────────────────────────────────
-        divider = np.full((PANEL_H, 2, 3), 60, dtype=np.uint8)
-        top_row = np.hstack([
-            cam_panel, divider, depth_panel, divider,
-            seg_panel, divider, obs_panel
-        ])
-        status = build_status_bar(cam_fps, depth_fps, seg_fps, obs_fps)
-        display = np.vstack([top_row, status])
+        # ── Build overlay display ───────────────────────────────────────
+        display = build_navigation_overlay(
+            frame, nav_instruction, planner_details,
+            cam_fps=cam_fps, depth_fps=depth_fps,
+            seg_fps=seg_fps, obs_fps=obs_fps)
 
         cv2.imshow(win_name, display)
 

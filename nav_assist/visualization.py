@@ -8,6 +8,7 @@ from matplotlib import colormaps
 
 from nav_assist.config import (
     ADE20K_CLASSES, ADE20K_PALETTE, PANEL_W, PANEL_H, STATUS_H, WIN_W,
+    PPM_OSTATUS_THRESHOLD, INSTRUCTION_BAR_H,
 )
 
 _CMAP_SPECTRAL = colormaps.get_cmap('Spectral_r')
@@ -249,3 +250,121 @@ def build_status_bar(cam_fps, depth_fps, seg_fps, obs_fps):
              scale=0.38, color=(200, 90, 90))
 
     return bar
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# Navigation Overlay (PPM single-frame output)
+# ════════════════════════════════════════════════════════════════════════════
+
+_SECTOR_NUMBERS = {
+    'top_left': '1', 'top_mid': '2', 'top_right': '3',
+    'bot_left': '4', 'bot_mid': '5', 'bot_right': '6',
+}
+
+_SECTOR_LABELS = {
+    'top_left': 'OH-L', 'top_mid': 'OH-M', 'top_right': 'OH-R',
+    'bot_left': 'GR-L', 'bot_mid': 'GR-M', 'bot_right': 'GR-R',
+}
+
+
+def build_navigation_overlay(frame, nav_instruction, planner_details,
+                              cam_fps=0.0, depth_fps=0.0,
+                              seg_fps=0.0, obs_fps=0.0):
+    """
+    Build a single-frame navigation overlay on the camera feed.
+
+    Draws a 6-sector grid (2×3) over the camera image, tints obstacle
+    sectors with a semi-transparent red wash, displays OStatus values
+    per sector, and adds a prominent instruction bar at the bottom.
+
+    Parameters
+    ----------
+    frame : np.ndarray (H, W, 3) BGR
+        Raw camera frame.
+    nav_instruction : str
+        Navigation instruction string from plan_path().
+    planner_details : dict
+        Full details dict from plan_path(), containing sector_bounds,
+        ostatus, action, etc.
+    cam_fps, depth_fps, seg_fps, obs_fps : float
+        FPS counters for each pipeline stage.
+
+    Returns
+    -------
+    np.ndarray (H + BAR_H, W, 3) BGR
+        Camera frame with overlay + instruction bar.
+    """
+    h, w = frame.shape[:2]
+    overlay = frame.copy()
+
+    sector_bounds = planner_details.get('sector_bounds', {})
+    ostatus = planner_details.get('ostatus', {})
+
+    # ── Tint obstacle sectors with semi-transparent red ────────────────
+    for name, (y0, y1, x0, x1) in sector_bounds.items():
+        ost = ostatus.get(name, 0.0)
+        if ost >= PPM_OSTATUS_THRESHOLD and y1 > y0 and x1 > x0:
+            # Alpha scales with OStatus: heavier tint for denser obstacles
+            alpha = min(0.35, 0.10 + ost * 0.30)
+            roi = overlay[y0:y1, x0:x1]
+            tint = np.full_like(roi, (0, 0, 200), dtype=np.uint8)
+            overlay[y0:y1, x0:x1] = cv2.addWeighted(
+                tint, alpha, roi, 1.0 - alpha, 0)
+
+    # ── Draw sector grid lines (thin white) ────────────────────────────
+    for name, (y0, y1, x0, x1) in sector_bounds.items():
+        cv2.rectangle(overlay, (x0, y0), (x1, y1), (255, 255, 255), 1)
+
+    # ── OStatus values and sector labels ───────────────────────────────
+    for name, (y0, y1, x0, x1) in sector_bounds.items():
+        ost = ostatus.get(name, 0.0)
+        cx = (x0 + x1) // 2
+        cy = (y0 + y1) // 2
+
+        # OStatus value (centred in sector)
+        ost_text = f'{ost:.2f}'
+        ost_color = (0, 0, 255) if ost >= PPM_OSTATUS_THRESHOLD else (0, 255, 0)
+        put_text(overlay, ost_text, (cx - 25, cy + 5),
+                 scale=0.60, color=ost_color, thickness=2)
+
+        # Sector number + label (top-left corner of sector)
+        sec_num = _SECTOR_NUMBERS.get(name, '')
+        sec_label = _SECTOR_LABELS.get(name, '')
+        put_text(overlay, f'{sec_num} {sec_label}', (x0 + 4, y0 + 16),
+                 scale=0.40, color=(200, 200, 200))
+
+    # ── FPS counters (top-left, semi-transparent background) ───────────
+    fps_w = min(260, w)
+    fps_h = 22
+    roi_fps = overlay[0:fps_h, 0:fps_w].copy()
+    dark = np.zeros_like(roi_fps)
+    overlay[0:fps_h, 0:fps_w] = cv2.addWeighted(
+        dark, 0.55, roi_fps, 0.45, 0)
+    fps_text = (f'Cam:{cam_fps:.0f}  Depth:{depth_fps:.0f}  '
+                f'Seg:{seg_fps:.0f}  PPM:{obs_fps:.0f}')
+    put_text(overlay, fps_text, (5, 15),
+             scale=0.38, color=(180, 180, 180))
+
+    # ── Instruction bar at bottom ──────────────────────────────────────
+    bar = np.zeros((INSTRUCTION_BAR_H, w, 3), dtype=np.uint8)
+    bar[:] = (25, 25, 25)
+    cv2.line(bar, (0, 0), (w, 0), (80, 80, 80), 1)
+
+    if nav_instruction:
+        inst_lower = nav_instruction.lower()
+        if 'stop' in inst_lower:
+            color = (0, 0, 255)       # red
+        elif 'left' in inst_lower or 'right' in inst_lower:
+            color = (0, 200, 255)     # amber
+        else:
+            color = (0, 255, 100)     # green
+
+        put_text(bar, f'Instruction: {nav_instruction}', (15, 38),
+                 scale=0.75, color=color, thickness=2)
+
+    # Key hints (bottom-right of bar)
+    hint_x = max(10, w - 280)
+    put_text(bar, 'Q:Quit  S:Screenshot  M:Mute', (hint_x, 54),
+             scale=0.35, color=(120, 120, 120))
+
+    return np.vstack([overlay, bar])

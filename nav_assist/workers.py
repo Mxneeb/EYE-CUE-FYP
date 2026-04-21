@@ -21,18 +21,15 @@ class DepthWorker(threading.Thread):
     Writes results into `shared` dict under lock.
     """
 
-    def __init__(self, model, shared, lock, stop_event, max_fps=5.0):
+    def __init__(self, model, shared, lock, stop_event):
         super().__init__(daemon=True)
         self.model = model
         self.shared = shared
         self.lock = lock
         self.stop_event = stop_event
-        self.max_fps = float(max_fps) if max_fps else 0.0
-        self._period_s = (1.0 / self.max_fps) if self.max_fps > 0 else 0.0
         self._frame_ready = threading.Event()
         self._next_frame = None
         self._frame_lock = threading.Lock()
-        self._last_publish_t = None
 
     def push_frame(self, frame):
         with self._frame_lock:
@@ -49,12 +46,6 @@ class DepthWorker(threading.Thread):
                 frame = self._next_frame
             if frame is None:
                 continue
-            if self._period_s > 0:
-                now = time.perf_counter()
-                if self._last_publish_t is not None:
-                    wait_s = self._period_s - (now - self._last_publish_t)
-                    if wait_s > 0:
-                        time.sleep(wait_s)
             t0 = time.perf_counter()
             try:
                 from nav_assist.config import DEPTH_INPUT_SIZE
@@ -62,15 +53,10 @@ class DepthWorker(threading.Thread):
             except Exception as e:
                 print(f'[DepthWorker] ERROR: {e}')
                 continue
-            now = time.perf_counter()
-            if self._last_publish_t is None:
-                eff_fps = 1.0 / max(now - t0, 1e-6)
-            else:
-                eff_fps = 1.0 / max(now - self._last_publish_t, 1e-6)
-            self._last_publish_t = now
+            elapsed = time.perf_counter() - t0
             with self.lock:
                 self.shared['depth'] = depth
-                self.shared['depth_fps'] = eff_fps
+                self.shared['depth_fps'] = 1.0 / elapsed
 
 
 class SegWorker(threading.Thread):
@@ -79,18 +65,15 @@ class SegWorker(threading.Thread):
     Writes results into `shared` dict under lock.
     """
 
-    def __init__(self, session, shared, lock, stop_event, max_fps=5.0):
+    def __init__(self, session, shared, lock, stop_event):
         super().__init__(daemon=True)
         self.session = session
         self.shared = shared
         self.lock = lock
         self.stop_event = stop_event
-        self.max_fps = float(max_fps) if max_fps else 0.0
-        self._period_s = (1.0 / self.max_fps) if self.max_fps > 0 else 0.0
         self._frame_ready = threading.Event()
         self._next_frame = None
         self._frame_lock = threading.Lock()
-        self._last_publish_t = None
 
     def push_frame(self, frame):
         with self._frame_lock:
@@ -117,12 +100,6 @@ class SegWorker(threading.Thread):
                 frame = self._next_frame
             if frame is None:
                 continue
-            if self._period_s > 0:
-                now = time.perf_counter()
-                if self._last_publish_t is not None:
-                    wait_s = self._period_s - (now - self._last_publish_t)
-                    if wait_s > 0:
-                        time.sleep(wait_s)
             t0 = time.perf_counter()
             try:
                 inp = self.preprocess(frame)
@@ -135,12 +112,7 @@ class SegWorker(threading.Thread):
             except Exception as e:
                 print(f'[SegWorker] ERROR: {e}')
                 continue
-            now = time.perf_counter()
-            if self._last_publish_t is None:
-                eff_fps = 1.0 / max(now - t0, 1e-6)
-            else:
-                eff_fps = 1.0 / max(now - self._last_publish_t, 1e-6)
-            self._last_publish_t = now
+            elapsed = time.perf_counter() - t0
             with self.lock:
                 self.shared['seg'] = seg_mask
-                self.shared['seg_fps'] = eff_fps
+                self.shared['seg_fps'] = 1.0 / elapsed
