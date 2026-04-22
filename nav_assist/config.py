@@ -17,9 +17,13 @@ import numpy as np
 # ── Paths ──────────────────────────────────────────────────────────────────
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DEPTH_SRC = os.path.join(ROOT, 'obs-tackle', 'third_party', 'Depth-Anything-V2')
-DEPTH_CKPT = os.path.join(ROOT, 'depth_anything_v2_vitb.pth')
+DEPTH_CKPT = os.path.join(ROOT, 'depth_anything_vits14.pth')
 SEG_ONNX = os.path.join(ROOT, 'topformer.onnx')
-SCREENSHOT_DIR = os.path.join(ROOT, 'screenshots')
+SCREENSHOT_DIR     = os.path.join(ROOT, 'screenshots')
+GEMMA_SNAPSHOT_DIR = os.path.join(ROOT, 'gemma_snapshots')
+CLIP_DIR           = os.path.join(ROOT, 'video_clips')
+CLIP_MAX_SECONDS   = 30.0
+CLIP_FPS           = 15.0
 RECORDING_DIR = os.path.join(ROOT, 'recordings')
 CONFIG_DIR = os.path.join(ROOT, 'config')
 
@@ -38,10 +42,10 @@ GRACEFUL_DEGRADATION = True  # Fall back to simpler algorithms on failure
 SAFETY_MODE_THRESHOLD = 0.3  # Be extra cautious when confidence is low
 
 # ── Depth model configuration ─────────────────────────────────────────────
-# Using DepthAnythingV2 ViT-Base (vitb) to match checkpoint file
-DEPTH_ENCODER = 'vitb'
-DEPTH_FEATURES = 128
-DEPTH_OUT_CHANNELS = [96, 192, 384, 768]
+# Using DepthAnythingV2 ViT-Small (vits) to match checkpoint file
+DEPTH_ENCODER = 'vits'
+DEPTH_FEATURES = 64
+DEPTH_OUT_CHANNELS = [48, 96, 192, 384]
 DEPTH_INPUT_SIZE = 308    # smaller than 518 for faster CPU inference
 
 # ── Display dimensions ─────────────────────────────────────────────────────
@@ -283,3 +287,16 @@ ADE20K_PALETTE = np.array([
     [ 71,  0,255],[122,  0,255],[  0,255,184],[  0, 92,255],[184,255,  0],
     [  0,133,255],[255,214,  0],[ 25,194,194],[102,255,  0],[ 92,  0,255],
 ], dtype=np.uint8)  # shape (150, 3) RGB
+
+# ── Gemma 4 Multimodal Assistant ──────────────────────────────────────────
+GEMMA_MODEL_PATH  = os.path.join(ROOT, 'gemma-4', 'gemma-4-E2B-it-Q3_K_M.gguf')
+GEMMA_MMPROJ_PATH = os.path.join(ROOT, 'gemma-4', 'mmproj-F16.gguf')
+GEMMA_N_GPU_LAYERS = -1     # full GPU offload; drop to 20 if OOM
+GEMMA_CTX_SIZE    = 2048
+GEMMA_IMAGE_SIZE  = 448     # Gemma 4 native patch resolution
+
+GEMMA_RESPONSE_DISPLAY_SECS = 15.0
+GEMMA_HINT_BAR_EXTRA_H      = 22   # px appended below INSTRUCTION_BAR_H
+
+PIPER_VOICE_ONNX = os.path.join(ROOT, 'piper_voices', 'en_US-lessac-high.onnx')
+PIPER_VOICE_JSON = os.path.join(ROOT, 'piper_voices', 'en_US-lessac-high.onnx.json')

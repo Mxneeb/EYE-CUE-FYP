@@ -22,9 +22,14 @@ screenshots/
 **/*.onnx
 **/*.engine
 **/*.weights
+*.whl
 trained_models/
 models/*.pt
 models/*.pth
+gemma-4/
+piper_voices/
+video_clips/
+gemma_snapshots/
 
 # OS/editor noise
 Thumbs.db

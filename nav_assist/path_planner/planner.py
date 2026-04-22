@@ -11,6 +11,8 @@ Usage:
     planner.shutdown()
 """
 
+import time
+
 import numpy as np
 
 from nav_assist.path_planner.zones import compute_zones, compute_alert_zone
@@ -24,6 +26,7 @@ from nav_assist.path_planner.fuzzy_logic import (
 )
 from nav_assist.path_planner.guidance import decide_navigation
 from nav_assist.path_planner.speaker import NavigationSpeaker
+from nav_assist.path_planner.stair_detector import check_for_stairs
 
 
 class PathPlanner:
@@ -41,10 +44,13 @@ class PathPlanner:
         Minimum seconds between spoken instructions.
     """
 
+    _STAIR_REPEAT_S = 1.5   # seconds between repeated stair warnings
+
     def __init__(self, speaker_enabled=True, speaker_cooldown=2.5):
         self.speaker = None
         if speaker_enabled:
             self.speaker = NavigationSpeaker(cooldown=speaker_cooldown)
+        self._stair_last_warned = 0.0
 
     def plan(self, seg_mask, depth_map):
         """
@@ -86,20 +92,35 @@ class PathPlanner:
         centroid = defuzzify(rule_strengths)
         fuzzy_action = classify_action(centroid)
 
-        # 6. Navigation guidance decision
-        instruction, action, severity = decide_navigation(
-            occupancy, obstacle_name, obstacle_pos)
+        # 6. Stair detection — highest priority; preempts all other guidance.
+        #    Bypasses change-only and cooldown logic; repeats every 1.5 s while
+        #    stairs remain in the lower two-thirds of the frame.
+        stair_alert = check_for_stairs(seg_mask, depth_map, zones)
 
-        # 7. STOP override: all ground zones heavily blocked
-        if all(occupancy.get(z, 0) > 0.50
-               for z in ('ground_left', 'ground_center', 'ground_right')):
-            instruction = 'Stop. Path completely blocked.'
-            action = 'STOP'
-            severity = 'emergency'
+        if stair_alert:
+            instruction = stair_alert['message']
+            action      = 'STOP'
+            severity    = 'emergency'
+            now = time.time()
+            if now - self._stair_last_warned >= self._STAIR_REPEAT_S:
+                self._stair_last_warned = now
+                if self.speaker:
+                    self.speaker.speak_immediate(instruction)
+        else:
+            # 7. Normal navigation guidance decision
+            instruction, action, severity = decide_navigation(
+                occupancy, obstacle_name, obstacle_pos)
 
-        # 8. Speak the instruction
-        if self.speaker:
-            self.speaker.speak(instruction, severity)
+            # 8. STOP override: all ground zones heavily blocked
+            if all(occupancy.get(z, 0) > 0.50
+                   for z in ('ground_left', 'ground_center', 'ground_right')):
+                instruction = 'Stop. Path completely blocked.'
+                action      = 'STOP'
+                severity    = 'emergency'
+
+            # 9. Speak the instruction (change-only, cooldown-gated)
+            if self.speaker:
+                self.speaker.speak(instruction, severity)
 
         # Build details dict (with backward-compat keys for visualization)
         details = {
@@ -115,6 +136,7 @@ class PathPlanner:
             'fuzzy_action': fuzzy_action,
             'obstacle_mask': obstacle_mask,
             'obstacle_labels': obstacle_labels,
+            'stair_alert': stair_alert,   # None or alert dict from stair_detector
             # Backward-compat keys used by build_navigation_overlay
             'sector_bounds': _zones_to_sector_bounds(zones),
             'ostatus': _occupancy_to_ostatus(occupancy),

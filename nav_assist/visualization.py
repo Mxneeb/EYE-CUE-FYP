@@ -9,6 +9,7 @@ from matplotlib import colormaps
 from nav_assist.config import (
     ADE20K_CLASSES, ADE20K_PALETTE, PANEL_W, PANEL_H, STATUS_H, WIN_W,
     PPM_OSTATUS_THRESHOLD, INSTRUCTION_BAR_H,
+    GEMMA_HINT_BAR_EXTRA_H, GEMMA_RESPONSE_DISPLAY_SECS,
 )
 
 _CMAP_SPECTRAL = colormaps.get_cmap('Spectral_r')
@@ -267,32 +268,93 @@ _SECTOR_LABELS = {
 }
 
 
+def _draw_response_overlay(img: np.ndarray, text: str, age: float) -> None:
+    """Draw Gemma response as a semi-transparent box over the camera frame."""
+    h, w = img.shape[:2]
+    margin     = 16
+    max_chars  = 55
+    line_h     = 22
+    title_h    = 20
+
+    # Word-wrap
+    words = text.split()
+    lines: list = []
+    current = ''
+    for word in words:
+        trial = (current + ' ' + word).strip()
+        if len(trial) <= max_chars:
+            current = trial
+        else:
+            if current:
+                lines.append(current)
+            current = word
+    if current:
+        lines.append(current)
+    lines = lines[:8]
+
+    box_w = min(w - 2 * margin, 620)
+    box_h = title_h + len(lines) * line_h + 2 * margin
+    box_x = (w - box_w) // 2
+    box_y = int(h * 0.08)
+
+    # Semi-transparent dark background
+    roi  = img[box_y:box_y + box_h, box_x:box_x + box_w]
+    dark = np.full_like(roi, (15, 15, 15))
+    img[box_y:box_y + box_h, box_x:box_x + box_w] = cv2.addWeighted(
+        dark, 0.82, roi, 0.18, 0)
+    cv2.rectangle(img, (box_x, box_y),
+                  (box_x + box_w, box_y + box_h), (80, 80, 80), 1)
+
+    # Fade hint in final 3 seconds
+    remaining = GEMMA_RESPONSE_DISPLAY_SECS - age
+    if remaining < 3.0:
+        put_text(img, f'(closes in {remaining:.0f}s)',
+                 (box_x + box_w - 120, box_y + 14),
+                 scale=0.32, color=(90, 90, 90))
+
+    put_text(img, 'AI Response:', (box_x + margin, box_y + 16),
+             scale=0.45, color=(100, 220, 255))
+
+    for i, line in enumerate(lines):
+        py = box_y + title_h + margin + i * line_h
+        put_text(img, line, (box_x + margin, py),
+                 scale=0.50, color=(230, 230, 230))
+
+
+def _draw_gemma_hint_row(bar: np.ndarray, w: int, gemma_state: str) -> None:
+    """Draw AI status / button hints in the lower strip of the instruction bar."""
+    y = INSTRUCTION_BAR_H + 15
+    if gemma_state == 'loading':
+        put_text(bar, 'AI Loading...', (15, y),
+                 scale=0.40, color=(100, 200, 255))
+    elif gemma_state == 'processing':
+        put_text(bar, 'Analyzing...', (15, y),
+                 scale=0.40, color=(0, 200, 255))
+    elif gemma_state == 'error':
+        put_text(bar, 'AI Error', (15, y),
+                 scale=0.40, color=(0, 60, 200))
+    else:
+        put_text(bar, '[D] Describe  [W] Wardrobe  [T] Weather  [C] Clock  [A] Sonar  [V] Clip  [E] SOS',
+                 (15, y), scale=0.31, color=(150, 150, 150))
+
+
 def build_navigation_overlay(frame, nav_instruction, planner_details,
                               cam_fps=0.0, depth_fps=0.0,
-                              seg_fps=0.0, obs_fps=0.0):
+                              seg_fps=0.0, obs_fps=0.0,
+                              gemma_state='idle',
+                              gemma_response='',
+                              gemma_response_age=0.0):
     """
     Build a single-frame navigation overlay on the camera feed.
 
     Draws a 6-sector grid (2×3) over the camera image, tints obstacle
     sectors with a semi-transparent red wash, displays OStatus values
     per sector, and adds a prominent instruction bar at the bottom.
-
-    Parameters
-    ----------
-    frame : np.ndarray (H, W, 3) BGR
-        Raw camera frame.
-    nav_instruction : str
-        Navigation instruction string from plan_path().
-    planner_details : dict
-        Full details dict from plan_path(), containing sector_bounds,
-        ostatus, action, etc.
-    cam_fps, depth_fps, seg_fps, obs_fps : float
-        FPS counters for each pipeline stage.
+    When gemma_response is set, a text box overlay is drawn on the frame.
 
     Returns
     -------
-    np.ndarray (H + BAR_H, W, 3) BGR
-        Camera frame with overlay + instruction bar.
+    np.ndarray (H + INSTRUCTION_BAR_H + GEMMA_HINT_BAR_EXTRA_H, W, 3) BGR
     """
     h, w = frame.shape[:2]
     overlay = frame.copy()
@@ -300,11 +362,14 @@ def build_navigation_overlay(frame, nav_instruction, planner_details,
     sector_bounds = planner_details.get('sector_bounds', {})
     ostatus = planner_details.get('ostatus', {})
 
+    # ── Gemma response overlay (drawn before sector grid so grid stays on top)
+    if gemma_response and gemma_response_age < GEMMA_RESPONSE_DISPLAY_SECS:
+        _draw_response_overlay(overlay, gemma_response, gemma_response_age)
+
     # ── Tint obstacle sectors with semi-transparent red ────────────────
     for name, (y0, y1, x0, x1) in sector_bounds.items():
         ost = ostatus.get(name, 0.0)
         if ost >= PPM_OSTATUS_THRESHOLD and y1 > y0 and x1 > x0:
-            # Alpha scales with OStatus: heavier tint for denser obstacles
             alpha = min(0.35, 0.10 + ost * 0.30)
             roi = overlay[y0:y1, x0:x1]
             tint = np.full_like(roi, (0, 0, 200), dtype=np.uint8)
@@ -321,14 +386,12 @@ def build_navigation_overlay(frame, nav_instruction, planner_details,
         cx = (x0 + x1) // 2
         cy = (y0 + y1) // 2
 
-        # OStatus value (centred in sector)
-        ost_text = f'{ost:.2f}'
+        ost_text  = f'{ost:.2f}'
         ost_color = (0, 0, 255) if ost >= PPM_OSTATUS_THRESHOLD else (0, 255, 0)
         put_text(overlay, ost_text, (cx - 25, cy + 5),
                  scale=0.60, color=ost_color, thickness=2)
 
-        # Sector number + label (top-left corner of sector)
-        sec_num = _SECTOR_NUMBERS.get(name, '')
+        sec_num   = _SECTOR_NUMBERS.get(name, '')
         sec_label = _SECTOR_LABELS.get(name, '')
         put_text(overlay, f'{sec_num} {sec_label}', (x0 + 4, y0 + 16),
                  scale=0.40, color=(200, 200, 200))
@@ -345,26 +408,32 @@ def build_navigation_overlay(frame, nav_instruction, planner_details,
     put_text(overlay, fps_text, (5, 15),
              scale=0.38, color=(180, 180, 180))
 
-    # ── Instruction bar at bottom ──────────────────────────────────────
-    bar = np.zeros((INSTRUCTION_BAR_H, w, 3), dtype=np.uint8)
+    # ── Instruction bar (nav row + AI hint row) ────────────────────────
+    bar_h = INSTRUCTION_BAR_H + GEMMA_HINT_BAR_EXTRA_H
+    bar = np.zeros((bar_h, w, 3), dtype=np.uint8)
     bar[:] = (25, 25, 25)
     cv2.line(bar, (0, 0), (w, 0), (80, 80, 80), 1)
 
     if nav_instruction:
         inst_lower = nav_instruction.lower()
         if 'stop' in inst_lower:
-            color = (0, 0, 255)       # red
+            color = (0, 0, 255)
         elif 'left' in inst_lower or 'right' in inst_lower:
-            color = (0, 200, 255)     # amber
+            color = (0, 200, 255)
         else:
-            color = (0, 255, 100)     # green
-
+            color = (0, 255, 100)
         put_text(bar, f'Instruction: {nav_instruction}', (15, 38),
                  scale=0.75, color=color, thickness=2)
 
-    # Key hints (bottom-right of bar)
-    hint_x = max(10, w - 280)
-    put_text(bar, 'Q:Quit  S:Screenshot  M:Mute', (hint_x, 54),
-             scale=0.35, color=(120, 120, 120))
+    # Divider between nav row and AI hint row
+    cv2.line(bar, (0, INSTRUCTION_BAR_H - 1), (w, INSTRUCTION_BAR_H - 1),
+             (50, 50, 50), 1)
+
+    _draw_gemma_hint_row(bar, w, gemma_state)
+
+    # Key hints (right side of nav row)
+    hint_x = max(10, w - 540)
+    put_text(bar, 'Q:Quit S:Shot M:Mute D:Desc W:Ward T:Weather C:Clock B:Mark L:Last A:Sonar V:Clip E:SOS',
+             (hint_x, 54), scale=0.27, color=(110, 110, 110))
 
     return np.vstack([overlay, bar])

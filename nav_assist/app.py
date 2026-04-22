@@ -16,6 +16,13 @@ Controls:
   Q / Esc  — quit
   S        — save screenshot
   M        — mute/unmute audio
+  D        — AI surrounding description
+  W        — AI wardrobe suggestion
+  T        — announce time and weather
+  C        — announce current time and date (offline)
+  A        — toggle distance sonar (ambient pitch beep for obstacle proximity)
+  V        — save the last 30 seconds of camera feed as an MP4 clip
+  E        — SOS alert (Telegram message + photo + location to emergency contact)
 """
 
 import os
@@ -32,13 +39,62 @@ import matplotlib
 matplotlib.use('Agg')
 
 from nav_assist.config import (
-    ROOT, DEPTH_SRC, DEPTH_CKPT, SEG_ONNX, SCREENSHOT_DIR,
+    ROOT, DEPTH_SRC, DEPTH_CKPT, SEG_ONNX, SCREENSHOT_DIR, GEMMA_SNAPSHOT_DIR,
+    CLIP_DIR, CLIP_MAX_SECONDS, CLIP_FPS,
     DEPTH_ENCODER, DEPTH_FEATURES, DEPTH_OUT_CHANNELS,
-    PANEL_W, PANEL_H, INSTRUCTION_BAR_H,
+    PANEL_W, PANEL_H, INSTRUCTION_BAR_H, GEMMA_HINT_BAR_EXTRA_H,
+    GEMMA_RESPONSE_DISPLAY_SECS,
 )
 from nav_assist.workers import DepthWorker, SegWorker
 from nav_assist.path_planner import PathPlanner
 from nav_assist.visualization import build_navigation_overlay
+from nav_assist.gemma_assistant import GemmaAssistant
+from nav_assist.time_weather import get_weather_and_time, announce_time
+from nav_assist.startup_briefing import announce_briefing
+from nav_assist.sonar import Sonar
+from nav_assist.clip_buffer import ClipBuffer
+from sos.sos import trigger_sos
+
+
+def _grab_hires_frame(cap, fallback, target_h=720):
+    """Switch cap to 4K, grab one frame, restore to 640×480, resize to target_h.
+
+    Falls back to `fallback` if the camera can't deliver a larger frame.
+    The brief resolution switch (~5 buffer flushes ≈ 150 ms) is acceptable
+    for a deliberate key press.
+    """
+    try:
+        cap.set(cv2.CAP_PROP_FRAME_WIDTH,  3840)
+        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 2160)
+        for _ in range(3):      # flush stale low-res frames from the buffer
+            cap.grab()
+        ret, hi = cap.read()
+    finally:
+        cap.set(cv2.CAP_PROP_FRAME_WIDTH,  640)
+        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+        for _ in range(2):      # flush any high-res frames before the loop resumes
+            cap.grab()
+
+    if not ret or hi is None:
+        print('[App] High-res grab failed — using current frame.')
+        return fallback
+
+    h, w = hi.shape[:2]
+    actual_h = cap.get(cv2.CAP_PROP_FRAME_HEIGHT)   # what the camera actually gave
+    print(f'[App] Grabbed {w}×{h} frame for Gemma (camera reported {int(actual_h)}px)')
+
+    if h > target_h:
+        scale = target_h / h
+        hi = cv2.resize(hi, (int(w * scale), target_h), interpolation=cv2.INTER_AREA)
+    return hi
+
+
+def _save_gemma_snapshot(frame, mode):
+    """Save the exact frame being sent to Gemma for later review."""
+    ts = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
+    path = os.path.join(GEMMA_SNAPSHOT_DIR, f'{mode}_{ts}.jpg')
+    cv2.imwrite(path, frame, [cv2.IMWRITE_JPEG_QUALITY, 95])
+    print(f'[App] Gemma snapshot saved: {path}')
 
 
 def main():
@@ -53,6 +109,10 @@ def main():
         sys.exit(1)
 
     os.makedirs(SCREENSHOT_DIR, exist_ok=True)
+    os.makedirs(GEMMA_SNAPSHOT_DIR, exist_ok=True)
+    os.makedirs(CLIP_DIR, exist_ok=True)
+    sonar       = Sonar()
+    clip_buffer = ClipBuffer(max_seconds=CLIP_MAX_SECONDS, fps=CLIP_FPS)
 
     # ── Load Depth Anything V2 ──────────────────────────────────────────
     print('[1/4] Loading Depth Anything V2 (vitb)...')
@@ -86,6 +146,10 @@ def main():
     print('[3/4] Initializing path planner with voice guidance...')
     planner = PathPlanner(speaker_enabled=True, speaker_cooldown=2.5)
 
+    # ── Gemma 4 assistant (starts loading in background) ───────────────
+    print('[3.5/4] Starting Gemma 4 assistant (loads in background)...')
+    gemma = GemmaAssistant()
+
     # ── Open camera ─────────────────────────────────────────────────────
     print('[4/4] Opening camera (index 0)...')
     cap = cv2.VideoCapture(0)   # no CAP_DSHOW — works better with virtual cams
@@ -98,7 +162,7 @@ def main():
     actual_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     actual_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     print(f'      Camera: {actual_w}x{actual_h}')
-    print('\nSystem ready — Q/Esc=quit, S=screenshot, M=mute/unmute\n')
+    print('\nSystem ready — Q/Esc=quit, S=screenshot, M=mute/unmute, D=describe, W=wardrobe\n')
 
     # ── Shared state ────────────────────────────────────────────────────
     shared = {
@@ -119,15 +183,24 @@ def main():
     # ── Window ──────────────────────────────────────────────────────────
     win_name = 'Obs-tackle: Navigation Assistance System'
     cv2.namedWindow(win_name, cv2.WINDOW_NORMAL)
-    cv2.resizeWindow(win_name, actual_w, actual_h + INSTRUCTION_BAR_H)
+    cv2.resizeWindow(win_name, actual_w,
+                     actual_h + INSTRUCTION_BAR_H + GEMMA_HINT_BAR_EXTRA_H)
+
+    # ── Startup briefing (greeting + time + weather + battery) ──────────
+    threading.Thread(target=announce_briefing,
+                     daemon=True, name='StartupBriefing').start()
 
     # ── Main display loop ───────────────────────────────────────────────
+    _weather_thread = None   # guards against overlapping T presses
     cam_fps = 0.0
     obs_fps = 0.0
     frame_count = 0
     t_fps_start = time.perf_counter()
     PUSH_EVERY = 2
     nav_instruction = ''
+    # Nav-voice ducking: silenced while Gemma/Piper is speaking
+    _gemma_was_speaking = False
+    _nav_enabled_before_duck = True
 
     while True:
         ret, frame = cap.read()
@@ -163,11 +236,45 @@ def main():
 
         obs_fps = 1.0 / max(time.perf_counter() - t_obs, 1e-6)
 
+        # ── Ambient feeds: rolling clip buffer + sonar level ────────────
+        clip_buffer.push(frame)
+        _inst_lower = nav_instruction.lower() if nav_instruction else ''
+        if 'stop' in _inst_lower:
+            _sonar_level = 'critical'
+        elif 'left' in _inst_lower or 'right' in _inst_lower or 'turn' in _inst_lower:
+            _sonar_level = 'warning'
+        else:
+            _sonar_level = 'safe'
+        sonar.update(_sonar_level)
+
+        # ── Auto-duck nav voice while Gemma/Piper is speaking ──────────
+        gemma_speaking = gemma.is_speaking()
+        if gemma_speaking and not _gemma_was_speaking:
+            # Piper just started — save nav state and silence it
+            _nav_enabled_before_duck = (planner.speaker.enabled
+                                        if planner.speaker else False)
+            if planner.speaker:
+                planner.speaker.enabled = False
+            _gemma_was_speaking = True
+        elif not gemma_speaking and _gemma_was_speaking:
+            # Piper just finished — restore nav state
+            if planner.speaker:
+                planner.speaker.enabled = _nav_enabled_before_duck
+            _gemma_was_speaking = False
+
+        # ── Gemma assistant status ──────────────────────────────────────
+        g_state, g_response, g_age = gemma.get_status()
+        if g_response and g_age > GEMMA_RESPONSE_DISPLAY_SECS:
+            gemma.dismiss()
+
         # ── Build overlay display ───────────────────────────────────────
         display = build_navigation_overlay(
             frame, nav_instruction, planner_details,
             cam_fps=cam_fps, depth_fps=depth_fps,
-            seg_fps=seg_fps, obs_fps=obs_fps)
+            seg_fps=seg_fps, obs_fps=obs_fps,
+            gemma_state=g_state,
+            gemma_response=g_response,
+            gemma_response_age=g_age)
 
         cv2.imshow(win_name, display)
 
@@ -183,13 +290,60 @@ def main():
         if key in (ord('m'), ord('M')):
             state = planner.toggle_speaker()
             print(f'Voice guidance {"ON" if state else "OFF"}')
+            threading.Thread(
+                target=gemma.speak,
+                args=('Guidance on.' if state else 'Guidance off.',),
+                daemon=True, name='GuidanceToggleSpeak').start()
+        if key in (ord('d'), ord('D')):
+            if g_state == 'ready':
+                print('[App] Requesting surrounding description (grabbing high-res)...')
+                hi = _grab_hires_frame(cap, frame)
+                _save_gemma_snapshot(hi, 'describe')
+                gemma.request(hi, 'describe')
+        if key in (ord('w'), ord('W')):
+            if g_state == 'ready':
+                print('[App] Requesting wardrobe suggestion (grabbing high-res)...')
+                hi = _grab_hires_frame(cap, frame)
+                _save_gemma_snapshot(hi, 'wardrobe')
+                gemma.request(hi, 'wardrobe')
+        if key in (ord('t'), ord('T')):
+            if _weather_thread is None or not _weather_thread.is_alive():
+                print('[App] Announcing time and weather...')
+                _weather_thread = threading.Thread(
+                    target=get_weather_and_time, daemon=True, name='WeatherAnnounce')
+                _weather_thread.start()
+        if key in (ord('c'), ord('C')):
+            threading.Thread(target=announce_time, daemon=True, name='TimeAnnounce').start()
+        if key in (ord('a'), ord('A')):
+            on = sonar.toggle()
+            print(f'[App] Sonar {"ON" if on else "OFF"}')
+            threading.Thread(
+                target=gemma.speak,
+                args=('Sonar on.' if on else 'Sonar off.',),
+                daemon=True, name='SonarSpeak').start()
+        if key in (ord('v'), ord('V')):
+            def _do_save_clip():
+                path = clip_buffer.save(CLIP_DIR)
+                if path:
+                    gemma.speak('Clip saved.')
+                else:
+                    gemma.speak('Could not save clip.')
+            threading.Thread(target=_do_save_clip,
+                             daemon=True, name='ClipSave').start()
+        if key in (ord('e'), ord('E')):
+            print('[App] SOS triggered.')
+            _sos_frame = frame.copy()
+            threading.Thread(target=trigger_sos, kwargs={'frame': _sos_frame},
+                             daemon=True, name='SOS').start()
 
     # ── Cleanup ─────────────────────────────────────────────────────────
     print('\nShutting down...')
     stop_event.set()
-    depth_worker.join(timeout=3)
-    seg_worker.join(timeout=3)
+    depth_worker.join(timeout=6)
+    seg_worker.join(timeout=6)
     planner.shutdown()
+    gemma.shutdown()
+    sonar.shutdown()
     cap.release()
     cv2.destroyAllWindows()
     print('Done.')

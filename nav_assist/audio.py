@@ -89,10 +89,17 @@ class AudioFeedback:
     def shutdown(self):
         """Signal the background thread to stop."""
         self._stop.set()
-        if self._thread is not None:
-            self._thread.join(timeout=2)
+        # Drain queue so the thread doesn't start another utterance
+        while not self._queue.empty():
+            try:
+                self._queue.get_nowait()
+            except queue.Empty:
+                break
+        # Stop the engine first — this interrupts any in-progress runAndWait()
         if self._engine is not None:
             try:
                 self._engine.stop()
             except Exception:
                 pass
+        if self._thread is not None:
+            self._thread.join(timeout=2)
