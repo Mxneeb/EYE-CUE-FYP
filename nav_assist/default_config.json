@@ -1,0 +1,95 @@
+{
+  "depth_model": {
+    "encoder": "vitb",
+    "features": 128,
+    "input_size": 308,
+    "temporal_smoothing": true,
+    "temporal_alpha": 0.7
+  },
+  "fusion": {
+    "confidence_alpha": 0.6,
+    "confidence_beta": 0.4,
+    "edge_sigma": 2.0,
+    "edge_low_thresh": 50,
+    "edge_high_thresh": 150,
+    "enable_edge_awareness": true
+  },
+  "obstacle_hierarchy": {
+    "critical": ["person", "car", "truck", "bus", "motorcycle", "bicycle"],
+    "caution": ["wall", "building", "fence", "pole", "tree", "stairs", "step"],
+    "navigable": ["chair", "table", "cabinet", "box", "bag", "stool"]
+  },
+  "path_planning": {
+    "variable_grid": true,
+    "trajectory_prediction": true,
+    "trajectory_lookahead_frames": 5,
+    "trajectory_smoothing": 0.8,
+    "alternative_paths": true,
+    "max_alternative_paths": 2,
+    "path_rank_by_safety": true
+  },
+  "audio": {
+    "spatial_enabled": true,
+    "distance_volume": true,
+    "icon_enabled": true,
+    "rhythm_enabled": true,
+    "speech_rate": 160,
+    "min_volume": 0.3,
+    "max_volume": 1.0,
+    "spatial_pan_range": 0.7,
+    "icon_frequencies": {
+      "wall": 200,
+      "person": 440,
+      "pole": 880,
+      "step": 600,
+      "chair": 350,
+      "default": 500
+    }
+  },
+  "rhythm_beep_rates": {
+    "very_close": 4,
+    "close": 2,
+    "medium": 1,
+    "far": 0.5
+  },
+  "display": {
+    "panel_width": 320,
+    "panel_height": 240,
+    "show_depth_histogram": true,
+    "show_trajectory": true,
+    "show_hazard_heatmap": true,
+    "show_ar_overlay": true,
+    "show_confidence_overlay": true
+  },
+  "performance": {
+    "enable_monitoring": true,
+    "history_size": 100,
+    "record_sessions": true,
+    "recording_fps": 15,
+    "recording_codec": "mp4v"
+  },
+  "safety": {
+    "enable_health_check": true,
+    "graceful_degradation": true,
+    "safety_mode_threshold": 0.3,
+    "model_health_check_interval": 1.0
+  },
+  "environmental": {
+    "low_light_detection": true,
+    "low_light_gain": 1.5,
+    "bright_light_detection": true,
+    "glare_detection": true,
+    "motion_blur_threshold": 50,
+    "reflection_detection": true
+  },
+  "motion_detection": {
+    "enabled": true,
+    "threshold": 10,
+    "min_frames": 3
+  },
+  "kalman_filter": {
+    "process_noise": 0.01,
+    "measure_noise": 0.1,
+    "smoothing_frames": 5
+  }
+}

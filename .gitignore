@@ -1,0 +1,70 @@
+# Model weights
+*.pth
+*.onnx
+
+# LLM / multimodal model artifacts
+*.gguf
+*.bin
+*.pt
+*.ckpt
+*.safetensors
+*.tflite
+*.engine
+
+# Media (keep repo lightweight)
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.bmp
+*.webp
+*.tiff
+*.svg
+*.mp4
+*.mov
+*.mkv
+*.avi
+*.webm
+*.wav
+*.mp3
+*.m4a
+
+# Large wheels / archives
+*.whl
+*.zip
+*.7z
+*.tar
+*.tar.gz
+*.rar
+
+# Virtual environment
+venv/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+
+# Runtime output
+screenshots/
+video_clips/
+gemma_snapshots/
+recordings/
+bookmarks/
+
+# Local data / caches
+*.db
+.pytest_cache/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+Thumbs.db
+.DS_Store
