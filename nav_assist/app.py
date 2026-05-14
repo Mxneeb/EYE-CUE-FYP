@@ -238,14 +238,7 @@ def main():
 
         # ── Ambient feeds: rolling clip buffer + sonar level ────────────
         clip_buffer.push(frame)
-        _inst_lower = nav_instruction.lower() if nav_instruction else ''
-        if 'stop' in _inst_lower:
-            _sonar_level = 'critical'
-        elif 'left' in _inst_lower or 'right' in _inst_lower or 'turn' in _inst_lower:
-            _sonar_level = 'warning'
-        else:
-            _sonar_level = 'safe'
-        sonar.update(_sonar_level)
+        sonar.update_from_depth(depth_np)
 
         # ── Auto-duck nav voice while Gemma/Piper is speaking ──────────
         gemma_speaking = gemma.is_speaking()
